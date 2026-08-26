@@ -1,0 +1,76 @@
+pkgname=noctalia-custom
+pkgver=@PKGVER@
+pkgrel=1
+pkgdesc='Noctalia desktop shell with locally maintained custom features'
+arch=('x86_64')
+url='https://github.com/T4T3Z0R/noctalia'
+license=('MIT')
+
+depends=(
+  'cairo'
+  'curl'
+  'fontconfig'
+  'freetype2'
+  'gcc-libs'
+  'git'
+  'glib2'
+  'glibc'
+  'jemalloc'
+  'libglvnd'
+  'libical'
+  'libpipewire'
+  'libqalculate'
+  'librsvg'
+  'libsecret'
+  'libsodium'
+  'libwebp'
+  'libwireplumber'
+  'libxkbcommon'
+  'libxml2'
+  'md4c'
+  'pam'
+  'pango'
+  'polkit'
+  'sdbus-cpp'
+  'tomlplusplus'
+  'wayland'
+)
+
+makedepends=(
+  'meson'
+  'ninja'
+  'nlohmann-json'
+  'pkgconf'
+  'stb'
+  'wayland-protocols'
+)
+
+provides=('noctalia')
+conflicts=('noctalia' 'noctalia-bin' 'noctalia-git' 'noctalia-penfix')
+replaces=('noctalia-penfix')
+
+options=('!debug')
+
+source=('noctalia-src.tar.gz')
+sha256sums=('@SOURCE_SHA256@')
+
+build() {
+  cd "$srcdir/noctalia-src"
+
+  meson setup build-package \
+    --prefix=/usr \
+    --buildtype=release \
+    -Dcpp_std=c++23 \
+    -Dtests=disabled \
+    -Dnative_optimizations=false
+
+  meson compile -C build-package noctalia
+}
+
+package() {
+  cd "$srcdir/noctalia-src"
+
+  meson install \
+    -C build-package \
+    --destdir "$pkgdir"
+}

@@ -1,0 +1,376 @@
+name: Publish noctalia-custom
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Noctalia source branch, tag, or commit
+        required: true
+        default: custom
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: arch-repo-publish
+  cancel-in-progress: false
+
+env:
+  REPO_NAME: t4t3z0r
+  RELEASE_TAG: arch-repo
+  SIGNING_SUBKEY: A2A5AEC28C6D94EF2FB3EC75AC3E97B561D89610
+
+jobs:
+  build-sign-publish:
+    name: Build, sign, and publish
+    runs-on: ubuntu-latest
+
+    container:
+      image: archlinux:latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install build and publishing dependencies
+        run: |
+          set -euo pipefail
+
+          pacman -Syu --noconfirm --needed \
+            base-devel git github-cli gnupg \
+            meson ninja pkgconf \
+            wayland wayland-protocols \
+            libglvnd freetype2 fontconfig \
+            cairo pango harfbuzz \
+            libxkbcommon glib2 \
+            libsecret libsodium \
+            sdbus-cpp libpipewire wireplumber polkit \
+            pam curl libwebp libjxl libsndfile librsvg \
+            libqalculate libxml2 \
+            md4c tomlplusplus libical \
+            nlohmann-json stb \
+            jemalloc just clang
+
+      - name: Checkout package infrastructure
+        uses: actions/checkout@v6
+
+      - name: Checkout Noctalia source
+        uses: actions/checkout@v6
+        with:
+          repository: T4T3Z0R/noctalia
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+          path: source/noctalia
+
+      - name: Resolve source metadata
+        run: |
+          set -euo pipefail
+
+          git -C source/noctalia fetch --force \
+            https://github.com/noctalia-dev/noctalia.git \
+            'refs/tags/v*:refs/tags/v*'
+
+          source_sha="$(git -C source/noctalia rev-parse HEAD)"
+          short_sha="${source_sha:0:8}"
+
+          base_tag="$(
+            git -C source/noctalia describe \
+              --tags \
+              --abbrev=0 \
+              --match 'v*' \
+              "$source_sha"
+          )"
+
+          base_ver="${base_tag#v}"
+          pkgver="${base_ver//-/_}.custom.${short_sha}"
+
+          {
+            echo "SOURCE_SHA=${source_sha}"
+            echo "PKGVER=${pkgver}"
+          } >> "$GITHUB_ENV"
+
+          echo "Source commit: ${source_sha}"
+          echo "Package version: ${pkgver}"
+
+      - name: Create build user
+        run: |
+          set -euo pipefail
+
+          useradd -m builduser
+
+          mkdir -p build/noctalia-custom
+          chown -R builduser:builduser source build
+
+          git config --global --add safe.directory \
+            "$GITHUB_WORKSPACE/source/noctalia"
+
+      - name: Check formatting
+        run: |
+          set -euo pipefail
+
+          su builduser -c "
+            cd '$GITHUB_WORKSPACE/source/noctalia'
+
+            mapfile -d '' files < <(
+              find src \( -name '*.cpp' -o -name '*.h' \) -print0
+            )
+
+            clang-format --dry-run -Werror \"\${files[@]}\"
+          "
+
+      - name: Build, test, and lint source
+        run: |
+          set -euo pipefail
+
+          su builduser -c "
+            cd '$GITHUB_WORKSPACE/source/noctalia'
+            just build
+            just test debug --print-errorlogs
+            just lint
+          "
+
+      - name: Generate package source
+        run: |
+          set -euo pipefail
+
+          git -C source/noctalia archive \
+            --format=tar.gz \
+            --prefix=noctalia-src/ \
+            "$SOURCE_SHA" \
+            > build/noctalia-custom/noctalia-src.tar.gz
+
+          source_sha256="$(
+            sha256sum build/noctalia-custom/noctalia-src.tar.gz \
+              | awk '{print $1}'
+          )"
+
+          sed \
+            -e "s/@PKGVER@/${PKGVER}/g" \
+            -e "s/@SOURCE_SHA256@/${source_sha256}/g" \
+            arch/noctalia-custom/PKGBUILD.in \
+            > build/noctalia-custom/PKGBUILD
+
+          chown -R builduser:builduser build/noctalia-custom
+
+      - name: Build Pacman package
+        run: |
+          set -euo pipefail
+
+          su builduser -c "
+            cd '$GITHUB_WORKSPACE/build/noctalia-custom'
+            makepkg --noconfirm --clean --cleanbuild
+          "
+
+      - name: Inspect package
+        run: |
+          set -euo pipefail
+
+          pkg="$(
+            find build/noctalia-custom \
+              -maxdepth 1 \
+              -type f \
+              -name 'noctalia-custom-*.pkg.tar.zst' \
+              -print -quit
+          )"
+
+          test -n "$pkg"
+
+          pacman -Qip "$pkg"
+
+          echo
+          echo '--- packaged files ---'
+          pacman -Qlp "$pkg" | sed -n '1,160p'
+
+          mkdir -p package-output
+          cp "$pkg" package-output/
+
+          echo "PACKAGE_FILE=$(basename "$pkg")" >> "$GITHUB_ENV"
+
+      - name: Import repository signing subkey
+        env:
+          ARCH_REPO_SIGNING_KEY: ${{ secrets.ARCH_REPO_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+
+          test -n "$ARCH_REPO_SIGNING_KEY"
+
+          printf '%s\n' "$ARCH_REPO_SIGNING_KEY" \
+            | gpg --batch --import
+
+          gpg --batch --list-secret-keys "$SIGNING_SUBKEY"
+
+      - name: Sign package
+        env:
+          ARCH_REPO_SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_SIGNING_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+
+          pkg="package-output/${PACKAGE_FILE}"
+
+          printf '%s' "$ARCH_REPO_SIGNING_PASSPHRASE" \
+            | gpg \
+                --batch \
+                --yes \
+                --pinentry-mode loopback \
+                --passphrase-fd 0 \
+                --local-user "${SIGNING_SUBKEY}!" \
+                --output "${pkg}.sig" \
+                --detach-sign \
+                "$pkg"
+
+          gpg --verify "${pkg}.sig" "$pkg"
+
+      - name: Assemble repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCH_REPO_SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_SIGNING_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p repo-output
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release download "$RELEASE_TAG" \
+              --pattern '*.pkg.tar.zst' \
+              --pattern '*.pkg.tar.zst.sig' \
+              --dir repo-output
+          fi
+
+          # This workflow owns the current noctalia-custom package version.
+          rm -f \
+            repo-output/noctalia-custom-*.pkg.tar.zst \
+            repo-output/noctalia-custom-*.pkg.tar.zst.sig
+
+          cp "package-output/${PACKAGE_FILE}" repo-output/
+          cp "package-output/${PACKAGE_FILE}.sig" repo-output/
+
+          cd repo-output
+
+          shopt -s nullglob
+          packages=( *.pkg.tar.zst )
+
+          if (( ${#packages[@]} == 0 )); then
+            echo "No Pacman packages available for repository database" >&2
+            exit 1
+          fi
+
+          repo-add \
+            --include-sigs \
+            "${REPO_NAME}.db.tar.zst" \
+            "${packages[@]}"
+
+          # Release assets cannot preserve repo-add's convenience symlinks.
+          rm -f "${REPO_NAME}.db" "${REPO_NAME}.files"
+
+          cp -L "${REPO_NAME}.db.tar.zst" "${REPO_NAME}.db"
+          cp -L "${REPO_NAME}.files.tar.zst" "${REPO_NAME}.files"
+
+          rm -f \
+            "${REPO_NAME}.db.tar.zst" \
+            "${REPO_NAME}.files.tar.zst"
+
+          sign_file() {
+            local file="$1"
+
+            printf '%s' "$ARCH_REPO_SIGNING_PASSPHRASE" \
+              | gpg \
+                  --batch \
+                  --yes \
+                  --pinentry-mode loopback \
+                  --passphrase-fd 0 \
+                  --local-user "${SIGNING_SUBKEY}!" \
+                  --output "${file}.sig" \
+                  --detach-sign \
+                  "$file"
+
+            gpg --verify "${file}.sig" "$file"
+          }
+
+          sign_file "${REPO_NAME}.db"
+          sign_file "${REPO_NAME}.files"
+
+          cp \
+            "$GITHUB_WORKSPACE/arch/keys/t4t3z0r-package-signing.asc" \
+            .
+
+          find . \
+            -maxdepth 1 \
+            -type f \
+            ! -name SHA256SUMS \
+            -printf '%f\0' \
+            | sort -z \
+            | xargs -0 sha256sum \
+            > SHA256SUMS
+
+      - name: Publish rolling Arch repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --target "$GITHUB_SHA" \
+              --title 'T4T3Z0R Arch repository' \
+              --notes 'Rolling signed Pacman repository for T4T3Z0R-maintained packages.' \
+              --latest=false
+          fi
+
+          # Package first. The old database remains valid until the new
+          # database is successfully published.
+          gh release upload "$RELEASE_TAG" \
+            "repo-output/${PACKAGE_FILE}" \
+            "repo-output/${PACKAGE_FILE}.sig" \
+            --clobber
+
+          gh release upload "$RELEASE_TAG" \
+            repo-output/t4t3z0r-package-signing.asc \
+            repo-output/SHA256SUMS \
+            repo-output/t4t3z0r.files \
+            repo-output/t4t3z0r.files.sig \
+            --clobber
+
+          # Database last.
+          gh release upload "$RELEASE_TAG" \
+            repo-output/t4t3z0r.db \
+            repo-output/t4t3z0r.db.sig \
+            --clobber
+
+          # Remove assets no longer represented by the rebuilt repository.
+          mapfile -t desired < <(
+            find repo-output \
+              -maxdepth 1 \
+              -type f \
+              -printf '%f\n' \
+              | sort
+          )
+
+          mapfile -t existing < <(
+            gh release view "$RELEASE_TAG" \
+              --json assets \
+              --jq '.assets[].name'
+          )
+
+          for asset in "${existing[@]}"; do
+            if ! printf '%s\n' "${desired[@]}" \
+              | grep -Fxq -- "$asset"; then
+              gh release delete-asset \
+                "$RELEASE_TAG" \
+                "$asset" \
+                --yes
+            fi
+          done
+
+      - name: Build summary
+        run: |
+          {
+            echo '## Published noctalia-custom'
+            echo
+            echo "- Source commit: \`${SOURCE_SHA}\`"
+            echo "- Package: \`${PACKAGE_FILE}\`"
+            echo "- Repository: \`t4t3z0r\`"
+            echo "- Release channel: \`arch-repo\`"
+            echo "- Package and repository databases signed"
+          } >> "$GITHUB_STEP_SUMMARY"
