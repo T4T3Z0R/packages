@@ -103,6 +103,7 @@ jobs:
           mkdir -p build/noctalia-custom
           chown -R builduser:builduser source build
 
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config --global --add safe.directory \
             "$GITHUB_WORKSPACE/source/noctalia"
 
