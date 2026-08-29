@@ -59,6 +59,13 @@ jobs:
           fetch-depth: 0
           path: source/noctalia-greeter
 
+      - name: Trust checked-out repositories
+        run: |
+          set -euo pipefail
+
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/source/noctalia-greeter"
+
       - name: Verify upstream tag and security baseline
         env:
           GH_TOKEN: ${{ github.token }}
@@ -417,6 +424,11 @@ jobs:
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
 
+      - name: Trust checked-out repository
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Download exact validated candidate
         uses: actions/download-artifact@v8
         with:
@@ -501,18 +513,19 @@ jobs:
       - name: Assemble signed repository
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           ARCH_REPO_SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_SIGNING_PASSPHRASE }}
         run: |
           set -euo pipefail
 
           mkdir -p repo-output
 
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release download "$RELEASE_TAG" \
-              --pattern '*.pkg.tar.zst' \
-              --pattern '*.pkg.tar.zst.sig' \
-              --dir repo-output
-          fi
+          gh release view "$RELEASE_TAG" >/dev/null
+
+          gh release download "$RELEASE_TAG" \
+            --pattern '*.pkg.tar.zst' \
+            --pattern '*.pkg.tar.zst.sig' \
+            --dir repo-output
 
           shopt -s nullglob
           existing_packages=( repo-output/*.pkg.tar.zst )
@@ -595,16 +608,11 @@ jobs:
       - name: Publish rolling Arch repository
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" \
-              --target "$GITHUB_SHA" \
-              --title 'T4T3Z0R Arch repository' \
-              --notes 'Rolling signed Pacman repository for T4T3Z0R-maintained packages.' \
-              --latest=false
-          fi
+          gh release view "$RELEASE_TAG" >/dev/null
 
           gh release upload "$RELEASE_TAG" \
             "repo-output/${PACKAGE_FILE}" \
