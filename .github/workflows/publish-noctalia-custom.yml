@@ -10,11 +10,7 @@ on:
         type: string
 
 permissions:
-  contents: write
-
-concurrency:
-  group: arch-repo-publish
-  cancel-in-progress: false
+  contents: read
 
 env:
   REPO_NAME: t4t3z0r
@@ -22,8 +18,8 @@ env:
   SIGNING_SUBKEY: A2A5AEC28C6D94EF2FB3EC75AC3E97B561D89610
 
 jobs:
-  build-sign-publish:
-    name: Build, sign, and publish
+  validate:
+    name: Validate unsigned candidate
     runs-on: ubuntu-latest
 
     container:
@@ -34,12 +30,12 @@ jobs:
         shell: bash
 
     steps:
-      - name: Install build and publishing dependencies
+      - name: Install validation dependencies
         run: |
           set -euo pipefail
 
           pacman -Syu --noconfirm --needed \
-            base-devel git github-cli gnupg \
+            base-devel git namcap \
             meson ninja pkgconf \
             wayland wayland-protocols \
             libglvnd freetype2 fontconfig \
@@ -63,6 +59,13 @@ jobs:
           ref: ${{ inputs.source_ref }}
           fetch-depth: 0
           path: source/noctalia
+
+      - name: Trust checked-out repositories
+        run: |
+          set -euo pipefail
+
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/source/noctalia"
 
       - name: Resolve source metadata
         run: |
@@ -88,9 +91,11 @@ jobs:
 
           {
             echo "SOURCE_SHA=${source_sha}"
+            echo "BASE_TAG=${base_tag}"
             echo "PKGVER=${pkgver}"
           } >> "$GITHUB_ENV"
 
+          echo "Base tag: ${base_tag}"
           echo "Source commit: ${source_sha}"
           echo "Package version: ${pkgver}"
 
@@ -102,10 +107,6 @@ jobs:
 
           mkdir -p build/noctalia-custom
           chown -R builduser:builduser source build
-
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git config --global --add safe.directory \
-            "$GITHUB_WORKSPACE/source/noctalia"
 
       - name: Check formatting
         run: |
@@ -136,6 +137,8 @@ jobs:
         run: |
           set -euo pipefail
 
+          mkdir -p evidence
+
           git -C source/noctalia archive \
             --format=tar.gz \
             --prefix=noctalia-src/ \
@@ -153,6 +156,33 @@ jobs:
             arch/noctalia-custom/PKGBUILD.in \
             > build/noctalia-custom/PKGBUILD
 
+          cp build/noctalia-custom/PKGBUILD \
+            evidence/rendered-PKGBUILD
+
+          printf '%s  %s\n' \
+            "$source_sha256" \
+            "noctalia-src.tar.gz" \
+            > evidence/source-SHA256SUMS
+
+          git -C source/noctalia \
+            diff --stat "${BASE_TAG}..${SOURCE_SHA}" \
+            > evidence/custom-diff-stat.txt
+
+          git -C source/noctalia \
+            diff --name-status "${BASE_TAG}..${SOURCE_SHA}" \
+            > evidence/custom-diff-files.txt
+
+          git -C source/noctalia \
+            log --oneline "${BASE_TAG}..${SOURCE_SHA}" \
+            > evidence/custom-commits.txt
+
+          grep -Ei \
+            '(auth|pam|polkit|lock|session|input|tablet|sudo|root|privilege)' \
+            evidence/custom-diff-files.txt \
+            > evidence/sensitive-files.txt || true
+
+          echo "SOURCE_SHA256=${source_sha256}" >> "$GITHUB_ENV"
+
           chown -R builduser:builduser build/noctalia-custom
 
       - name: Build Pacman package
@@ -164,9 +194,11 @@ jobs:
             makepkg --noconfirm --clean --cleanbuild
           "
 
-      - name: Inspect package
+      - name: Inspect candidate package
         run: |
           set -euo pipefail
+
+          mkdir -p candidate evidence/package-root
 
           pkg="$(
             find build/noctalia-custom \
@@ -178,16 +210,257 @@ jobs:
 
           test -n "$pkg"
 
-          pacman -Qip "$pkg"
+          package_file="$(basename "$pkg")"
+          cp "$pkg" candidate/
 
-          echo
-          echo '--- packaged files ---'
-          pacman -Qlp "$pkg" | sed -n '1,160p'
+          pacman -Qip "$pkg" \
+            | tee evidence/package-info.txt
+
+          pacman -Qlp "$pkg" \
+            > evidence/pacman-package-files.txt
+
+          bsdtar -tf "$pkg" \
+            | sed 's#^\./##' \
+            | tee evidence/package-files.txt
+
+          bsdtar -xOf "$pkg" .PKGINFO \
+            > evidence/PKGINFO
+
+          required_files=(
+            usr/bin/noctalia
+            usr/share/licenses/noctalia-custom/LICENSE
+          )
+
+          for required in "${required_files[@]}"; do
+            if ! grep -Fxq "$required" evidence/package-files.txt; then
+              echo "Required package file missing: $required" >&2
+              exit 1
+            fi
+          done
+
+          bsdtar -xf "$pkg" \
+            -C evidence/package-root
+
+          file evidence/package-root/usr/bin/noctalia \
+            > evidence/noctalia-file.txt
+
+          if grep -q 'ELF' evidence/noctalia-file.txt; then
+            ldd evidence/package-root/usr/bin/noctalia \
+              > evidence/ldd.txt
+
+            if grep -q 'not found' evidence/ldd.txt; then
+              echo "Unresolved runtime linkage detected" >&2
+              cat evidence/ldd.txt >&2
+              exit 1
+            fi
+          fi
+
+          bsdtar -xOf "$pkg" \
+            usr/share/licenses/noctalia-custom/LICENSE \
+            > evidence/packaged-LICENSE
+
+          cmp \
+            source/noctalia/LICENSE \
+            evidence/packaged-LICENSE
+
+          namcap build/noctalia-custom/PKGBUILD \
+            > evidence/namcap-PKGBUILD.txt \
+            2>&1 || true
+
+          namcap "$pkg" \
+            > evidence/namcap-package.txt \
+            2>&1 || true
+
+          if grep -Eq ' E: ' \
+            evidence/namcap-PKGBUILD.txt \
+            evidence/namcap-package.txt
+          then
+            echo "Namcap reported package errors" >&2
+            cat evidence/namcap-PKGBUILD.txt >&2
+            cat evidence/namcap-package.txt >&2
+            exit 1
+          fi
+
+          package_sha256="$(
+            sha256sum "$pkg" \
+              | awk '{print $1}'
+          )"
+
+          printf '%s  %s\n' \
+            "$package_sha256" \
+            "$package_file" \
+            > evidence/package-SHA256SUMS
+
+          {
+            echo "PACKAGE_FILE=$package_file"
+            echo "PACKAGE_SHA256=$package_sha256"
+          } >> "$GITHUB_ENV"
+
+      - name: Candidate summary
+        run: |
+          {
+            echo '## noctalia-custom unsigned candidate'
+            echo
+            echo "- Requested source: \`${{ inputs.source_ref }}\`"
+            echo "- Upstream base tag: \`${BASE_TAG}\`"
+            echo "- Exact source commit: \`${SOURCE_SHA}\`"
+            echo "- Source SHA-256: \`${SOURCE_SHA256}\`"
+            echo "- Package: \`${PACKAGE_FILE}\`"
+            echo "- Package SHA-256: \`${PACKAGE_SHA256}\`"
+            echo "- Signed: **NO**"
+            echo "- Published: **NO**"
+            echo
+            echo '### Custom delta'
+            echo
+            sed 's/^/- /' evidence/custom-diff-stat.txt
+            echo
+            echo '### Sensitive-area filename matches'
+            echo
+
+            if [[ -s evidence/sensitive-files.txt ]]; then
+              sed 's/^/- `/' evidence/sensitive-files.txt \
+                | sed 's/$/`/'
+            else
+              echo '- None detected by filename heuristic'
+            fi
+
+            echo
+            echo '**READY FOR HUMAN SIGNING APPROVAL**'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload unsigned candidate and evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: noctalia-custom-${{ github.run_id }}-candidate
+          path: |
+            candidate/
+            evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+  approval-ready:
+    name: Notify signing approval ready
+    needs: validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send Pushover approval notification
+        env:
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+
+          test -n "$PUSHOVER_APP_TOKEN"
+          test -n "$PUSHOVER_USER_KEY"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --form-string "token=$PUSHOVER_APP_TOKEN" \
+            --form-string "user=$PUSHOVER_USER_KEY" \
+            --form-string "title=Package approval required" \
+            --form-string \
+              "message=noctalia-custom ${SOURCE_REF} passed validation and is ready for signing approval." \
+            --form-string \
+              "url=https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --form-string "url_title=Review deployment" \
+            https://api.pushover.net/1/messages.json
+
+          echo 'Pushover signing-approval notification sent.' \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Sign and publish approved candidate
+    needs:
+      - validate
+      - approval-ready
+
+    runs-on: ubuntu-latest
+
+    environment:
+      name: arch-repo-publish
+
+    permissions:
+      contents: write
+
+    concurrency:
+      group: arch-repo-publish
+      cancel-in-progress: false
+
+    container:
+      image: archlinux:latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install publishing dependencies
+        run: |
+          set -euo pipefail
+
+          pacman -Syu --noconfirm --needed \
+            git \
+            github-cli \
+            gnupg
+
+      - name: Checkout package infrastructure
+        uses: actions/checkout@v6
+
+      - name: Trust checked-out repository
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Download exact validated candidate
+        uses: actions/download-artifact@v8
+        with:
+          name: noctalia-custom-${{ github.run_id }}-candidate
+          path: validated
+
+      - name: Verify validated candidate
+        run: |
+          set -euo pipefail
+
+          checksum_file="validated/evidence/package-SHA256SUMS"
+          test -s "$checksum_file"
+
+          read -r expected_sha package_file < "$checksum_file"
+
+          case "$package_file" in
+            noctalia-custom-*.pkg.tar.zst)
+              ;;
+            *)
+              echo "Unexpected package filename: $package_file" >&2
+              exit 1
+              ;;
+          esac
+
+          pkg="validated/candidate/${package_file}"
+          test -f "$pkg"
+
+          actual_sha="$(
+            sha256sum "$pkg" \
+              | awk '{print $1}'
+          )"
+
+          if [[ "$actual_sha" != "$expected_sha" ]]; then
+            echo "Validated package SHA-256 mismatch" >&2
+            echo "Expected: $expected_sha" >&2
+            echo "Actual:   $actual_sha" >&2
+            exit 1
+          fi
 
           mkdir -p package-output
           cp "$pkg" package-output/
 
-          echo "PACKAGE_FILE=$(basename "$pkg")" >> "$GITHUB_ENV"
+          {
+            echo "PACKAGE_FILE=$package_file"
+            echo "PACKAGE_SHA256=$actual_sha"
+          } >> "$GITHUB_ENV"
 
       - name: Import repository signing subkey
         env:
@@ -202,7 +475,7 @@ jobs:
 
           gpg --batch --list-secret-keys "$SIGNING_SUBKEY"
 
-      - name: Sign package
+      - name: Sign approved package
         env:
           ARCH_REPO_SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_SIGNING_PASSPHRASE }}
         run: |
@@ -223,21 +496,40 @@ jobs:
 
           gpg --verify "${pkg}.sig" "$pkg"
 
-      - name: Assemble repository
+      - name: Assemble signed repository
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           ARCH_REPO_SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_SIGNING_PASSPHRASE }}
         run: |
           set -euo pipefail
 
           mkdir -p repo-output
 
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release download "$RELEASE_TAG" \
-              --pattern '*.pkg.tar.zst' \
-              --pattern '*.pkg.tar.zst.sig' \
-              --dir repo-output
-          fi
+          # The rolling repository must already exist. A GitHub/API error
+          # must never masquerade as an empty repository.
+          gh release view "$RELEASE_TAG" >/dev/null
+
+          gh release download "$RELEASE_TAG" \
+            --pattern '*.pkg.tar.zst' \
+            --pattern '*.pkg.tar.zst.sig' \
+            --dir repo-output
+
+          # Verify every package already trusted by the repository before
+          # using it to construct the next repository state.
+          shopt -s nullglob
+          existing_packages=( repo-output/*.pkg.tar.zst )
+
+          for existing_pkg in "${existing_packages[@]}"; do
+            existing_sig="${existing_pkg}.sig"
+
+            if [[ ! -f "$existing_sig" ]]; then
+              echo "Existing repository package lacks signature: $existing_pkg" >&2
+              exit 1
+            fi
+
+            gpg --verify "$existing_sig" "$existing_pkg"
+          done
 
           # This workflow owns the current noctalia-custom package version.
           rm -f \
@@ -262,7 +554,6 @@ jobs:
             "${REPO_NAME}.db.tar.zst" \
             "${packages[@]}"
 
-          # Release assets cannot preserve repo-add's convenience symlinks.
           rm -f "${REPO_NAME}.db" "${REPO_NAME}.files"
 
           cp -L "${REPO_NAME}.db.tar.zst" "${REPO_NAME}.db"
@@ -308,19 +599,14 @@ jobs:
       - name: Publish rolling Arch repository
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" \
-              --target "$GITHUB_SHA" \
-              --title 'T4T3Z0R Arch repository' \
-              --notes 'Rolling signed Pacman repository for T4T3Z0R-maintained packages.' \
-              --latest=false
-          fi
+          gh release view "$RELEASE_TAG" >/dev/null
 
-          # Package first. The old database remains valid until the new
-          # database is successfully published.
+          # Package first. Existing clients remain on the old valid database
+          # until the new repository metadata is successfully published.
           gh release upload "$RELEASE_TAG" \
             "repo-output/${PACKAGE_FILE}" \
             "repo-output/${PACKAGE_FILE}.sig" \
@@ -339,7 +625,6 @@ jobs:
             repo-output/t4t3z0r.db.sig \
             --clobber
 
-          # Remove assets no longer represented by the rebuilt repository.
           mapfile -t desired < <(
             find repo-output \
               -maxdepth 1 \
@@ -356,7 +641,8 @@ jobs:
 
           for asset in "${existing[@]}"; do
             if ! printf '%s\n' "${desired[@]}" \
-              | grep -Fxq -- "$asset"; then
+              | grep -Fxq -- "$asset"
+            then
               gh release delete-asset \
                 "$RELEASE_TAG" \
                 "$asset" \
@@ -364,14 +650,15 @@ jobs:
             fi
           done
 
-      - name: Build summary
+      - name: Publication summary
         run: |
           {
             echo '## Published noctalia-custom'
             echo
-            echo "- Source commit: \`${SOURCE_SHA}\`"
+            echo "- Requested source: \`${{ inputs.source_ref }}\`"
             echo "- Package: \`${PACKAGE_FILE}\`"
-            echo "- Repository: \`t4t3z0r\`"
-            echo "- Release channel: \`arch-repo\`"
-            echo "- Package and repository databases signed"
+            echo "- Package SHA-256: \`${PACKAGE_SHA256}\`"
+            echo "- Repository: \`${REPO_NAME}\`"
+            echo '- Human signing approval: **PASSED**'
+            echo '- Package and repository databases signed'
           } >> "$GITHUB_STEP_SUMMARY"
