@@ -7,6 +7,9 @@ url='https://github.com/noctalia-dev/noctalia-greeter'
 license=('MIT')
 
 depends=(
+  'bash'
+  'glibc'
+  'gcc-libs'
   'greetd'
   'dbus'
   'wayland'
@@ -22,6 +25,7 @@ depends=(
   'glib2'
   'libwebp'
   'librsvg'
+  'tomlplusplus'
 )
 
 optdepends=(
@@ -33,7 +37,6 @@ makedepends=(
   'ninja'
   'pkgconf'
   'wayland-protocols'
-  'tomlplusplus'
   'nlohmann-json'
   'stb'
 )
@@ -66,4 +69,7 @@ package() {
   meson install \
     -C build-package \
     --destdir "$pkgdir"
+
+  install -Dm644 LICENSE \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

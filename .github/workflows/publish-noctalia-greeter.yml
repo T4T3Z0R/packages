@@ -238,7 +238,10 @@ jobs:
             usr/bin/noctalia-greeter-compositor
             usr/bin/noctalia-greeter-session
             usr/bin/noctalia-greeter-apply-appearance
+            usr/bin/noctalia-greeter-print-greetd-config
+            usr/share/noctalia-greeter/setup_greeter_system.sh
             usr/share/polkit-1/actions/org.noctalia.greeter.apply-appearance.policy
+            usr/share/licenses/noctalia-greeter-t4t3z0r/LICENSE
             usr/lib/tmpfiles.d/noctalia-greeter.conf
           )
 
@@ -285,6 +288,16 @@ jobs:
           namcap "$pkg" \
             > evidence/namcap-package.txt \
             2>&1 || true
+
+          if grep -Eq ' E: ' \
+            evidence/namcap-PKGBUILD.txt \
+            evidence/namcap-package.txt
+          then
+            echo "Namcap reported package errors" >&2
+            cat evidence/namcap-PKGBUILD.txt >&2
+            cat evidence/namcap-package.txt >&2
+            exit 1
+          fi
 
           package_sha256="$(
             sha256sum "$pkg" \
