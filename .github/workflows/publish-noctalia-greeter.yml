@@ -15,6 +15,9 @@ permissions:
 env:
   UPSTREAM_REPOSITORY: noctalia-dev/noctalia-greeter
   SECURITY_FIX: e025d3fce796668b48ad33ad3fc49686452f29ce
+  REPO_NAME: t4t3z0r
+  RELEASE_TAG: arch-repo
+  SIGNING_SUBKEY: A2A5AEC28C6D94EF2FB3EC75AC3E97B561D89610
 
 jobs:
   validate:
@@ -341,3 +344,321 @@ jobs:
             evidence/
           if-no-files-found: error
           retention-days: 7
+
+  approval-ready:
+    name: Notify signing approval ready
+    needs: validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send Pushover approval notification
+        env:
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          SOURCE_TAG: ${{ inputs.source_tag }}
+        run: |
+          set -euo pipefail
+
+          test -n "$PUSHOVER_APP_TOKEN"
+          test -n "$PUSHOVER_USER_KEY"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --form-string "token=$PUSHOVER_APP_TOKEN" \
+            --form-string "user=$PUSHOVER_USER_KEY" \
+            --form-string "title=Package approval required" \
+            --form-string \
+              "message=noctalia-greeter ${SOURCE_TAG} passed validation and is ready for signing approval." \
+            --form-string \
+              "url=https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --form-string "url_title=Review deployment" \
+            https://api.pushover.net/1/messages.json
+
+          echo 'Pushover signing-approval notification sent.' \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Sign and publish approved candidate
+    needs:
+      - validate
+      - approval-ready
+
+    runs-on: ubuntu-latest
+
+    environment:
+      name: arch-repo-publish
+
+    permissions:
+      contents: write
+
+    concurrency:
+      group: arch-repo-publish
+      cancel-in-progress: false
+
+    container:
+      image: archlinux:latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install publishing dependencies
+        run: |
+          set -euo pipefail
+
+          pacman -Syu --noconfirm --needed \
+            git \
+            github-cli \
+            gnupg
+
+      - name: Checkout package infrastructure
+        uses: actions/checkout@v6
+
+      - name: Download exact validated candidate
+        uses: actions/download-artifact@v8
+        with:
+          name: noctalia-greeter-${{ inputs.source_tag }}-candidate
+          path: validated
+
+      - name: Verify validated candidate
+        run: |
+          set -euo pipefail
+
+          checksum_file="validated/evidence/package-SHA256SUMS"
+          test -s "$checksum_file"
+
+          read -r expected_sha package_file < "$checksum_file"
+
+          case "$package_file" in
+            noctalia-greeter-t4t3z0r-*.pkg.tar.zst)
+              ;;
+            *)
+              echo "Unexpected package filename: $package_file" >&2
+              exit 1
+              ;;
+          esac
+
+          pkg="validated/candidate/${package_file}"
+          test -f "$pkg"
+
+          actual_sha="$(
+            sha256sum "$pkg" \
+              | awk '{print $1}'
+          )"
+
+          if [[ "$actual_sha" != "$expected_sha" ]]; then
+            echo "Validated package SHA-256 mismatch" >&2
+            echo "Expected: $expected_sha" >&2
+            echo "Actual:   $actual_sha" >&2
+            exit 1
+          fi
+
+          mkdir -p package-output
+          cp "$pkg" package-output/
+
+          {
+            echo "PACKAGE_FILE=$package_file"
+            echo "PACKAGE_SHA256=$actual_sha"
+          } >> "$GITHUB_ENV"
+
+      - name: Import repository signing subkey
+        env:
+          ARCH_REPO_SIGNING_KEY: ${{ secrets.ARCH_REPO_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+
+          test -n "$ARCH_REPO_SIGNING_KEY"
+
+          printf '%s\n' "$ARCH_REPO_SIGNING_KEY" \
+            | gpg --batch --import
+
+          gpg --batch --list-secret-keys "$SIGNING_SUBKEY"
+
+      - name: Sign approved package
+        env:
+          ARCH_REPO_SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_SIGNING_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+
+          pkg="package-output/${PACKAGE_FILE}"
+
+          printf '%s' "$ARCH_REPO_SIGNING_PASSPHRASE" \
+            | gpg \
+                --batch \
+                --yes \
+                --pinentry-mode loopback \
+                --passphrase-fd 0 \
+                --local-user "${SIGNING_SUBKEY}!" \
+                --output "${pkg}.sig" \
+                --detach-sign \
+                "$pkg"
+
+          gpg --verify "${pkg}.sig" "$pkg"
+
+      - name: Assemble signed repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCH_REPO_SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_SIGNING_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p repo-output
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release download "$RELEASE_TAG" \
+              --pattern '*.pkg.tar.zst' \
+              --pattern '*.pkg.tar.zst.sig' \
+              --dir repo-output
+          fi
+
+          shopt -s nullglob
+          existing_packages=( repo-output/*.pkg.tar.zst )
+
+          for existing_pkg in "${existing_packages[@]}"; do
+            existing_sig="${existing_pkg}.sig"
+
+            if [[ ! -f "$existing_sig" ]]; then
+              echo "Existing repository package lacks signature: $existing_pkg" >&2
+              exit 1
+            fi
+
+            gpg --verify "$existing_sig" "$existing_pkg"
+          done
+
+          rm -f \
+            repo-output/noctalia-greeter-t4t3z0r-*.pkg.tar.zst \
+            repo-output/noctalia-greeter-t4t3z0r-*.pkg.tar.zst.sig
+
+          cp "package-output/${PACKAGE_FILE}" repo-output/
+          cp "package-output/${PACKAGE_FILE}.sig" repo-output/
+
+          cd repo-output
+
+          shopt -s nullglob
+          packages=( *.pkg.tar.zst )
+
+          if (( ${#packages[@]} == 0 )); then
+            echo "No Pacman packages available for repository database" >&2
+            exit 1
+          fi
+
+          repo-add \
+            --include-sigs \
+            "${REPO_NAME}.db.tar.zst" \
+            "${packages[@]}"
+
+          rm -f "${REPO_NAME}.db" "${REPO_NAME}.files"
+
+          cp -L "${REPO_NAME}.db.tar.zst" "${REPO_NAME}.db"
+          cp -L "${REPO_NAME}.files.tar.zst" "${REPO_NAME}.files"
+
+          rm -f \
+            "${REPO_NAME}.db.tar.zst" \
+            "${REPO_NAME}.files.tar.zst"
+
+          sign_file() {
+            local file="$1"
+
+            printf '%s' "$ARCH_REPO_SIGNING_PASSPHRASE" \
+              | gpg \
+                  --batch \
+                  --yes \
+                  --pinentry-mode loopback \
+                  --passphrase-fd 0 \
+                  --local-user "${SIGNING_SUBKEY}!" \
+                  --output "${file}.sig" \
+                  --detach-sign \
+                  "$file"
+
+            gpg --verify "${file}.sig" "$file"
+          }
+
+          sign_file "${REPO_NAME}.db"
+          sign_file "${REPO_NAME}.files"
+
+          cp \
+            "$GITHUB_WORKSPACE/arch/keys/t4t3z0r-package-signing.asc" \
+            .
+
+          find . \
+            -maxdepth 1 \
+            -type f \
+            ! -name SHA256SUMS \
+            -printf '%f\0' \
+            | sort -z \
+            | xargs -0 sha256sum \
+            > SHA256SUMS
+
+      - name: Publish rolling Arch repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --target "$GITHUB_SHA" \
+              --title 'T4T3Z0R Arch repository' \
+              --notes 'Rolling signed Pacman repository for T4T3Z0R-maintained packages.' \
+              --latest=false
+          fi
+
+          gh release upload "$RELEASE_TAG" \
+            "repo-output/${PACKAGE_FILE}" \
+            "repo-output/${PACKAGE_FILE}.sig" \
+            --clobber
+
+          gh release upload "$RELEASE_TAG" \
+            repo-output/t4t3z0r-package-signing.asc \
+            repo-output/SHA256SUMS \
+            repo-output/t4t3z0r.files \
+            repo-output/t4t3z0r.files.sig \
+            --clobber
+
+          # Database last. Existing clients remain on the old valid
+          # repository state until this succeeds.
+          gh release upload "$RELEASE_TAG" \
+            repo-output/t4t3z0r.db \
+            repo-output/t4t3z0r.db.sig \
+            --clobber
+
+          mapfile -t desired < <(
+            find repo-output \
+              -maxdepth 1 \
+              -type f \
+              -printf '%f\n' \
+              | sort
+          )
+
+          mapfile -t existing < <(
+            gh release view "$RELEASE_TAG" \
+              --json assets \
+              --jq '.assets[].name'
+          )
+
+          for asset in "${existing[@]}"; do
+            if ! printf '%s\n' "${desired[@]}" \
+              | grep -Fxq -- "$asset"
+            then
+              gh release delete-asset \
+                "$RELEASE_TAG" \
+                "$asset" \
+                --yes
+            fi
+          done
+
+      - name: Publication summary
+        run: |
+          {
+            echo '## Published noctalia-greeter'
+            echo
+            echo "- Upstream tag: \`${{ inputs.source_tag }}\`"
+            echo "- Package: \`${PACKAGE_FILE}\`"
+            echo "- Package SHA-256: \`${PACKAGE_SHA256}\`"
+            echo "- Repository: \`${REPO_NAME}\`"
+            echo '- Human signing approval: **PASSED**'
+            echo '- Package and repository databases signed'
+          } >> "$GITHUB_STEP_SUMMARY"
