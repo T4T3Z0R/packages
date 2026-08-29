@@ -1,0 +1,330 @@
+name: Publish noctalia-greeter
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: Upstream Noctalia Greeter release tag
+        required: true
+        default: v1.2.1
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPOSITORY: noctalia-dev/noctalia-greeter
+  SECURITY_FIX: e025d3fce796668b48ad33ad3fc49686452f29ce
+
+jobs:
+  validate:
+    name: Validate unsigned candidate
+    runs-on: ubuntu-latest
+
+    container:
+      image: archlinux:latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install validation dependencies
+        run: |
+          set -euo pipefail
+
+          pacman -Syu --noconfirm --needed \
+            base-devel git curl jq namcap \
+            meson ninja pkgconf \
+            greetd dbus \
+            wayland wayland-protocols wlroots0.20 \
+            libglvnd libinput \
+            freetype2 fontconfig \
+            cairo pango harfbuzz \
+            libxkbcommon glib2 \
+            libwebp librsvg \
+            tomlplusplus nlohmann-json stb
+
+      - name: Checkout package infrastructure
+        uses: actions/checkout@v6
+
+      - name: Checkout upstream greeter
+        uses: actions/checkout@v6
+        with:
+          repository: noctalia-dev/noctalia-greeter
+          ref: ${{ inputs.source_tag }}
+          fetch-depth: 0
+          path: source/noctalia-greeter
+
+      - name: Verify upstream tag and security baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_TAG: ${{ inputs.source_tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$SOURCE_TAG" =~ ^v[0-9A-Za-z._+-]+$ ]]; then
+            echo "Invalid source tag: $SOURCE_TAG" >&2
+            exit 1
+          fi
+
+          mkdir -p evidence
+
+          ref_json="$(
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --location \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${UPSTREAM_REPOSITORY}/git/ref/tags/${SOURCE_TAG}"
+          )"
+
+          tag_type="$(jq -r '.object.type' <<< "$ref_json")"
+
+          if [[ "$tag_type" != "tag" ]]; then
+            echo "Release tag is not an annotated tag" >&2
+            exit 1
+          fi
+
+          tag_sha="$(jq -r '.object.sha' <<< "$ref_json")"
+
+          tag_json="$(
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --location \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${UPSTREAM_REPOSITORY}/git/tags/${tag_sha}"
+          )"
+
+          verified="$(jq -r '.verification.verified' <<< "$tag_json")"
+          reason="$(jq -r '.verification.reason' <<< "$tag_json")"
+
+          if [[ "$verified" != "true" || "$reason" != "valid" ]]; then
+            echo "Upstream tag signature is not verified and valid" >&2
+            exit 1
+          fi
+
+          api_source_sha="$(jq -r '.object.sha' <<< "$tag_json")"
+
+          local_source_sha="$(
+            git -C source/noctalia-greeter \
+              rev-parse "${SOURCE_TAG}^{}"
+          )"
+
+          if [[ "$local_source_sha" != "$api_source_sha" ]]; then
+            echo "Checked-out commit does not match verified tag target" >&2
+            exit 1
+          fi
+
+          if ! git -C source/noctalia-greeter \
+            merge-base --is-ancestor \
+            "$SECURITY_FIX" \
+            "$local_source_sha"
+          then
+            echo "Required security fix is not present in candidate" >&2
+            exit 1
+          fi
+
+          pkgver="${SOURCE_TAG#v}"
+          pkgver="${pkgver//-/_}"
+
+          {
+            echo "SOURCE_TAG=$SOURCE_TAG"
+            echo "TAG_SHA=$tag_sha"
+            echo "SOURCE_SHA=$local_source_sha"
+            echo "PKGVER=$pkgver"
+          } >> "$GITHUB_ENV"
+
+          jq '{
+            tag_object: .sha,
+            tag: .tag,
+            target: .object.sha,
+            verification: {
+              verified: .verification.verified,
+              reason: .verification.reason,
+              verified_at: .verification.verified_at
+            }
+          }' <<< "$tag_json" \
+            > evidence/upstream-tag-verification.json
+
+      - name: Create package source
+        run: |
+          set -euo pipefail
+
+          mkdir -p build/noctalia-greeter
+
+          git -C source/noctalia-greeter archive \
+            --format=tar.gz \
+            --prefix=noctalia-greeter-src/ \
+            "$SOURCE_SHA" \
+            > build/noctalia-greeter/noctalia-greeter-src.tar.gz
+
+          source_sha256="$(
+            sha256sum \
+              build/noctalia-greeter/noctalia-greeter-src.tar.gz \
+            | awk '{print $1}'
+          )"
+
+          sed \
+            -e "s/@PKGVER@/${PKGVER}/g" \
+            -e "s/@SOURCE_SHA256@/${source_sha256}/g" \
+            arch/noctalia-greeter-t4t3z0r/PKGBUILD.in \
+            > build/noctalia-greeter/PKGBUILD
+
+          {
+            echo "SOURCE_SHA256=$source_sha256"
+          } >> "$GITHUB_ENV"
+
+          printf '%s  %s\n' \
+            "$source_sha256" \
+            "noctalia-greeter-src.tar.gz" \
+            > evidence/source-SHA256SUMS
+
+      - name: Build unsigned package
+        run: |
+          set -euo pipefail
+
+          useradd -m builduser
+
+          chown -R builduser:builduser \
+            source \
+            build
+
+          su builduser -c "
+            cd '$GITHUB_WORKSPACE/build/noctalia-greeter'
+            makepkg --noconfirm --cleanbuild
+          "
+
+      - name: Inspect candidate package
+        run: |
+          set -euo pipefail
+
+          mkdir -p candidate evidence/package-root
+
+          pkg="$(
+            find build/noctalia-greeter \
+              -maxdepth 1 \
+              -type f \
+              -name 'noctalia-greeter-t4t3z0r-*.pkg.tar.zst' \
+              -print -quit
+          )"
+
+          test -n "$pkg"
+
+          package_file="$(basename "$pkg")"
+
+          cp "$pkg" candidate/
+
+          pacman -Qip "$pkg" \
+            | tee evidence/package-info.txt
+
+          pacman -Qlp "$pkg" \
+            > evidence/pacman-package-files.txt
+
+          bsdtar -tf "$pkg" \
+            | sed 's#^\\./##' \
+            | tee evidence/package-files.txt
+
+          bsdtar -xOf "$pkg" .PKGINFO \
+            > evidence/PKGINFO
+
+          required_files=(
+            usr/bin/noctalia-greeter
+            usr/bin/noctalia-greeter-compositor
+            usr/bin/noctalia-greeter-session
+            usr/bin/noctalia-greeter-apply-appearance
+            usr/share/polkit-1/actions/org.noctalia.greeter.apply-appearance.policy
+            usr/lib/tmpfiles.d/noctalia-greeter.conf
+          )
+
+          for required in "${required_files[@]}"; do
+            if ! grep -Fxq "$required" evidence/package-files.txt; then
+              echo "Required package file missing: $required" >&2
+              exit 1
+            fi
+          done
+
+          if ! grep -q \
+            '^usr/share/noctalia-greeter/assets/' \
+            evidence/package-files.txt
+          then
+            echo "Required greeter assets tree is missing" >&2
+            exit 1
+          fi
+
+          bsdtar -xf "$pkg" \
+            -C evidence/package-root
+
+          for binary in \
+            usr/bin/noctalia-greeter \
+            usr/bin/noctalia-greeter-compositor \
+            usr/bin/noctalia-greeter-apply-appearance
+          do
+            {
+              echo "=== $binary ==="
+              ldd "evidence/package-root/$binary"
+              echo
+            } >> evidence/ldd.txt
+          done
+
+          if grep -q 'not found' evidence/ldd.txt; then
+            echo "Unresolved runtime linkage detected" >&2
+            cat evidence/ldd.txt
+            exit 1
+          fi
+
+          namcap build/noctalia-greeter/PKGBUILD \
+            > evidence/namcap-PKGBUILD.txt \
+            2>&1 || true
+
+          namcap "$pkg" \
+            > evidence/namcap-package.txt \
+            2>&1 || true
+
+          package_sha256="$(
+            sha256sum "$pkg" \
+            | awk '{print $1}'
+          )"
+
+          printf '%s  %s\n' \
+            "$package_sha256" \
+            "$package_file" \
+            > evidence/package-SHA256SUMS
+
+          {
+            echo "PACKAGE_FILE=$package_file"
+            echo "PACKAGE_SHA256=$package_sha256"
+          } >> "$GITHUB_ENV"
+
+      - name: Candidate summary
+        run: |
+          {
+            echo '## noctalia-greeter unsigned candidate'
+            echo
+            echo "- Upstream tag: \`${SOURCE_TAG}\`"
+            echo "- Tag object: \`${TAG_SHA}\`"
+            echo "- Source commit: \`${SOURCE_SHA}\`"
+            echo "- Security fix ancestor: \`${SECURITY_FIX}\`"
+            echo "- Source SHA-256: \`${SOURCE_SHA256}\`"
+            echo "- Package: \`${PACKAGE_FILE}\`"
+            echo "- Package SHA-256: \`${PACKAGE_SHA256}\`"
+            echo "- Signed: **NO**"
+            echo "- Published: **NO**"
+            echo
+            echo 'Candidate is ready for package-content and dependency review.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload unsigned candidate and evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: noctalia-greeter-${{ inputs.source_tag }}-candidate
+          path: |
+            candidate/
+            evidence/
+          if-no-files-found: error
+          retention-days: 7

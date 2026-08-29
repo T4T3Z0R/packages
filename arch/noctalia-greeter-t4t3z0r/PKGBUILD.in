@@ -1,0 +1,69 @@
+pkgname=noctalia-greeter-t4t3z0r
+pkgver=@PKGVER@
+pkgrel=1
+pkgdesc='Noctalia login greeter packaged for the T4T3Z0R Arch repository'
+arch=('x86_64')
+url='https://github.com/noctalia-dev/noctalia-greeter'
+license=('MIT')
+
+depends=(
+  'greetd'
+  'dbus'
+  'wayland'
+  'wlroots0.20'
+  'libglvnd'
+  'libinput'
+  'freetype2'
+  'fontconfig'
+  'cairo'
+  'pango'
+  'harfbuzz'
+  'libxkbcommon'
+  'glib2'
+  'libwebp'
+  'librsvg'
+)
+
+optdepends=(
+  'polkit: appearance synchronization from Noctalia Shell'
+)
+
+makedepends=(
+  'meson'
+  'ninja'
+  'pkgconf'
+  'wayland-protocols'
+  'tomlplusplus'
+  'nlohmann-json'
+  'stb'
+)
+
+provides=('noctalia-greeter')
+conflicts=(
+  'noctalia-greeter'
+  'noctalia-greeter-git'
+  'noctalia-greeter-bin'
+)
+
+options=('!debug')
+
+source=('noctalia-greeter-src.tar.gz')
+sha256sums=('@SOURCE_SHA256@')
+
+build() {
+  cd "$srcdir/noctalia-greeter-src"
+
+  meson setup build-package \
+    --prefix=/usr \
+    --buildtype=plain
+
+  meson compile -C build-package
+}
+
+package() {
+  cd "$srcdir/noctalia-greeter-src"
+
+  meson install \
+    -C build-package \
+    --destdir "$pkgdir"
+}
