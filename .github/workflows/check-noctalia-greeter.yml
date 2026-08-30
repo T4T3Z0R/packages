@@ -1,0 +1,200 @@
+name: Check noctalia-greeter updates
+run-name: Check noctalia-greeter updates
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 10 * * *'
+      timezone: "America/New_York"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-noctalia-greeter-updates
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: noctalia-dev/noctalia-greeter
+  PUBLISH_WORKFLOW: publish-noctalia-greeter.yml
+  PACKAGE_PREFIX: noctalia-greeter-t4t3z0r
+  REPO_NAME: t4t3z0r
+  REPO_RELEASE_TAG: arch-repo
+
+jobs:
+  check:
+    name: Check upstream greeter tag
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      actions: write
+
+    steps:
+      - name: Detect and dispatch new version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          latest_tag="$(
+            git ls-remote \
+              --tags \
+              --refs \
+              "https://github.com/${UPSTREAM_REPOSITORY}.git" \
+              'v*' \
+              | awk '
+                  $2 ~ /^refs\/tags\/v[0-9]+\.[0-9]+\.[0-9]+$/ {
+                    sub("refs/tags/", "", $2)
+                    print $2
+                  }
+                ' \
+              | sort -V \
+              | tail -n 1
+          )"
+
+          if [[ -z "${latest_tag}" ]]; then
+            echo "No stable upstream version tag was found." >&2
+            exit 1
+          fi
+
+          pkgver="${latest_tag#v}"
+
+          repo_dir="$(mktemp -d)"
+          trap 'rm -rf "${repo_dir}"' EXIT
+
+          gh release download \
+            "${REPO_RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern "${REPO_NAME}.db" \
+            --dir "${repo_dir}"
+
+          db_entries="$(
+            tar -tf "${repo_dir}/${REPO_NAME}.db"
+          )"
+
+          published=false
+
+          while IFS= read -r entry; do
+            case "${entry}" in
+              "${PACKAGE_PREFIX}-${pkgver}-"*/desc|"./${PACKAGE_PREFIX}-${pkgver}-"*/desc)
+                published=true
+                break
+                ;;
+            esac
+          done <<< "${db_entries}"
+
+          {
+            echo '## Noctalia Greeter update check'
+            echo
+            echo "- Latest upstream tag: \`${latest_tag}\`"
+            echo "- Package version: \`${pkgver}\`"
+            echo "- Present in repository DB: \`${published}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [[ "${published}" == "true" ]]; then
+            echo "Greeter ${latest_tag} is already published."
+            exit 0
+          fi
+
+          expected_title="Publish noctalia-greeter ${latest_tag}"
+
+          existing_run="$(
+            gh run list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --workflow "${PUBLISH_WORKFLOW}" \
+              --event workflow_dispatch \
+              --limit 1000 \
+              --json databaseId,displayTitle,status,conclusion,url \
+              | jq -r \
+                  --arg title "${expected_title}" \
+                  'map(select(.displayTitle == $title))
+                   | .[0] // empty
+                   | [
+                       (.databaseId | tostring),
+                       .status,
+                       (.conclusion // ""),
+                       .url
+                     ]
+                   | @tsv'
+          )"
+
+          if [[ -n "${existing_run}" ]]; then
+            IFS=$'\t' read -r \
+              existing_id \
+              existing_status \
+              existing_conclusion \
+              existing_url \
+              <<< "${existing_run}"
+
+            {
+              echo "- Existing publisher run: \`${existing_id}\`"
+              echo "- Existing status: \`${existing_status}\`"
+              echo "- Existing conclusion: \`${existing_conclusion:-none}\`"
+            } >> "${GITHUB_STEP_SUMMARY}"
+
+            if [[ "${existing_status}" == "completed" ]]; then
+              if [[ "${existing_conclusion}" == "success" ]]; then
+                echo "::error::Publisher run succeeded, but ${latest_tag} is absent from the repository DB."
+              else
+                echo "::error::Publisher run for ${latest_tag} completed with ${existing_conclusion:-unknown}."
+              fi
+
+              echo "Run: ${existing_url}" >&2
+              echo "Manual review is required." >&2
+              exit 1
+            fi
+
+            echo "Publisher run for ${latest_tag} is already ${existing_status}."
+            exit 0
+          fi
+
+          gh workflow run \
+            "${PUBLISH_WORKFLOW}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref main \
+            -f source_tag="${latest_tag}"
+
+          {
+            echo "- Existing publisher run: \`none\`"
+            echo "- Dispatched: \`true\`"
+            echo
+            echo 'The greeter publisher will validate the candidate before requesting signing approval.'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  notify-failure:
+    name: Notify detector failure
+    needs: check
+
+    if: >-
+      always() &&
+      needs.check.result == 'failure'
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send Pushover failure notification
+        env:
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          test -n "${PUSHOVER_APP_TOKEN}"
+          test -n "${PUSHOVER_USER_KEY}"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --retry 3 \
+            --retry-all-errors \
+            --max-time 30 \
+            --form-string "token=${PUSHOVER_APP_TOKEN}" \
+            --form-string "user=${PUSHOVER_USER_KEY}" \
+            --form-string "title=Greeter update check FAILED" \
+            --form-string "message=Automatic noctalia-greeter release detection failed or found an inconsistent publisher state. Manual review is required." \
+            --form-string "url=${RUN_URL}" \
+            --form-string "url_title=Open GitHub Actions run" \
+            https://api.pushover.net/1/messages.json

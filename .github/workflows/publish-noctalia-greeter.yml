@@ -1,4 +1,5 @@
 name: Publish noctalia-greeter
+run-name: "Publish noctalia-greeter ${{ inputs.source_tag }}"
 
 on:
   workflow_dispatch:
