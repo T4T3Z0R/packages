@@ -39,7 +39,7 @@ jobs:
             meson ninja pkgconf \
             wayland wayland-protocols \
             libglvnd freetype2 fontconfig \
-            cairo pango harfbuzz \
+            cairo pango harfbuzz hicolor-icon-theme \
             libxkbcommon glib2 \
             libsecret libsodium \
             sdbus-cpp libpipewire wireplumber polkit \
@@ -122,17 +122,6 @@ jobs:
             clang-format --dry-run -Werror \"\${files[@]}\"
           "
 
-      - name: Build, test, and lint source
-        run: |
-          set -euo pipefail
-
-          su builduser -c "
-            cd '$GITHUB_WORKSPACE/source/noctalia'
-            just build
-            just test debug --print-errorlogs
-            just lint
-          "
-
       - name: Generate package source
         run: |
           set -euo pipefail
@@ -184,6 +173,46 @@ jobs:
           echo "SOURCE_SHA256=${source_sha256}" >> "$GITHUB_ENV"
 
           chown -R builduser:builduser build/noctalia-custom
+
+      - name: Preflight package metadata
+        run: |
+          set -euo pipefail
+
+          pkgbuild="$GITHUB_WORKSPACE/build/noctalia-custom/PKGBUILD"
+
+          # Catch shell/PKGBUILD syntax damage before compiling anything.
+          bash -n "$pkgbuild"
+
+          # Ensure makepkg can parse the rendered metadata.
+          su builduser -c "
+            cd '$GITHUB_WORKSPACE/build/noctalia-custom'
+            makepkg --printsrcinfo > .SRCINFO
+          "
+
+          cp \
+            build/noctalia-custom/.SRCINFO \
+            evidence/rendered-SRCINFO
+
+          # Verify every declared runtime/build dependency is actually
+          # present in the CI image before makepkg spends time compiling.
+          mapfile -t declared_deps < <(
+            bash -c '
+              source "$1"
+              printf "%s\n" \
+                "${depends[@]}" \
+                "${makedepends[@]}"
+            ' _ "$pkgbuild"
+          )
+
+          missing="$(
+            pacman -T "${declared_deps[@]}" || true
+          )"
+
+          if [[ -n "$missing" ]]; then
+            echo "CI image is missing declared PKGBUILD dependencies:" >&2
+            printf '%s\n' "$missing" >&2
+            exit 1
+          fi
 
       - name: Build Pacman package
         run: |
@@ -295,6 +324,17 @@ jobs:
             echo "PACKAGE_FILE=$package_file"
             echo "PACKAGE_SHA256=$package_sha256"
           } >> "$GITHUB_ENV"
+
+      - name: Build, test, and lint source
+        run: |
+          set -euo pipefail
+
+          su builduser -c "
+            cd '$GITHUB_WORKSPACE/source/noctalia'
+            just build
+            just test debug --print-errorlogs
+            just lint
+          "
 
       - name: Candidate summary
         run: |
@@ -587,13 +627,21 @@ jobs:
             "$GITHUB_WORKSPACE/arch/keys/t4t3z0r-package-signing.asc" \
             .
 
-          find . \
-            -maxdepth 1 \
-            -type f \
-            ! -name SHA256SUMS \
-            -printf '%f\0' \
-            | sort -z \
-            | xargs -0 sha256sum \
+          mapfile -d '' checksum_files < <(
+            find . \
+              -maxdepth 1 \
+              -type f \
+              ! -name SHA256SUMS \
+              -printf '%f\0' \
+              | sort -z
+          )
+
+          if (( ${#checksum_files[@]} == 0 )); then
+            echo "No repository assets available for checksums" >&2
+            exit 1
+          fi
+
+          sha256sum "${checksum_files[@]}" \
             > SHA256SUMS
 
       - name: Publish rolling Arch repository

@@ -596,13 +596,21 @@ jobs:
             "$GITHUB_WORKSPACE/arch/keys/t4t3z0r-package-signing.asc" \
             .
 
-          find . \
-            -maxdepth 1 \
-            -type f \
-            ! -name SHA256SUMS \
-            -printf '%f\0' \
-            | sort -z \
-            | xargs -0 sha256sum \
+          mapfile -d '' checksum_files < <(
+            find . \
+              -maxdepth 1 \
+              -type f \
+              ! -name SHA256SUMS \
+              -printf '%f\0' \
+              | sort -z
+          )
+
+          if (( ${#checksum_files[@]} == 0 )); then
+            echo "No repository assets available for checksums" >&2
+            exit 1
+          fi
+
+          sha256sum "${checksum_files[@]}" \
             > SHA256SUMS
 
       - name: Publish rolling Arch repository
