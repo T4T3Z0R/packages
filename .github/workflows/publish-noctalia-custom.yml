@@ -255,9 +255,26 @@ jobs:
           bsdtar -xOf "$pkg" .PKGINFO \
             > evidence/PKGINFO
 
+          if ! grep -Fxq \
+            'license = MIT AND Apache-2.0' \
+            evidence/PKGINFO
+          then
+            echo "Package license metadata is incomplete or unexpected" >&2
+            cat evidence/PKGINFO >&2
+            exit 1
+          fi
+
           required_files=(
             usr/bin/noctalia
             usr/share/licenses/noctalia-custom/LICENSE
+            usr/share/licenses/noctalia-custom/fzy-LICENSE
+            usr/share/licenses/noctalia-custom/Luau-LICENSE
+            usr/share/licenses/noctalia-custom/Lua-LICENSE
+            usr/share/licenses/noctalia-custom/Material-Color-Utilities-LICENSE
+            usr/share/licenses/noctalia-custom/Wuffs-LICENSE-APACHE
+            usr/share/licenses/noctalia-custom/Wuffs-LICENSE-MIT
+            usr/share/licenses/noctalia-custom/Tabler-Icons-LICENSE
+            usr/share/doc/noctalia-custom/CREDITS.md
           )
 
           for required in "${required_files[@]}"; do
@@ -284,13 +301,25 @@ jobs:
             fi
           fi
 
-          bsdtar -xOf "$pkg" \
-            usr/share/licenses/noctalia-custom/LICENSE \
-            > evidence/packaged-LICENSE
+          notice_pairs=(
+            "LICENSE|usr/share/licenses/noctalia-custom/LICENSE"
+            "third_party/fzy/LICENSE|usr/share/licenses/noctalia-custom/fzy-LICENSE"
+            "third_party/luau/LICENSE.txt|usr/share/licenses/noctalia-custom/Luau-LICENSE"
+            "third_party/luau/lua_LICENSE.txt|usr/share/licenses/noctalia-custom/Lua-LICENSE"
+            "third_party/material_color_utilities/LICENSE|usr/share/licenses/noctalia-custom/Material-Color-Utilities-LICENSE"
+            "third_party/wuffs/LICENSE-APACHE|usr/share/licenses/noctalia-custom/Wuffs-LICENSE-APACHE"
+            "third_party/wuffs/LICENSE-MIT|usr/share/licenses/noctalia-custom/Wuffs-LICENSE-MIT"
+            "assets/fonts/tabler-icons-license.txt|usr/share/licenses/noctalia-custom/Tabler-Icons-LICENSE"
+            "CREDITS.md|usr/share/doc/noctalia-custom/CREDITS.md"
+          )
 
-          cmp \
-            source/noctalia/LICENSE \
-            evidence/packaged-LICENSE
+          for pair in "${notice_pairs[@]}"; do
+            IFS='|' read -r source_notice packaged_notice <<< "$pair"
+
+            cmp \
+              "source/noctalia/$source_notice" \
+              "evidence/package-root/$packaged_notice"
+          done
 
           namcap build/noctalia-custom/PKGBUILD \
             > evidence/namcap-PKGBUILD.txt \
@@ -364,6 +393,8 @@ jobs:
               echo '- None detected by filename heuristic'
             fi
 
+            echo
+            echo '- License/attribution package checks: **PASSED**'
             echo
             echo '**READY FOR HUMAN SIGNING APPROVAL**'
           } >> "$GITHUB_STEP_SUMMARY"

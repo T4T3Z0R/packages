@@ -1,10 +1,10 @@
 pkgname=noctalia-custom
 pkgver=@PKGVER@
-pkgrel=1
+pkgrel=2
 pkgdesc='Noctalia desktop shell with locally maintained custom features'
 arch=('x86_64')
 url='https://github.com/T4T3Z0R/noctalia'
-license=('MIT')
+license=('MIT AND Apache-2.0')
 
 depends=(
   'bash'
@@ -80,6 +80,32 @@ package() {
     -C build-package \
     --destdir "$pkgdir"
 
+  local licensedir="$pkgdir/usr/share/licenses/$pkgname"
+  local docdir="$pkgdir/usr/share/doc/$pkgname"
+
+  # Noctalia's own MIT notice.
   install -Dm644 LICENSE \
-    "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    "$licensedir/LICENSE"
+
+  # Vendored libraries compiled into the Noctalia binary.
+  install -Dm644 third_party/fzy/LICENSE \
+    "$licensedir/fzy-LICENSE"
+  install -Dm644 third_party/luau/LICENSE.txt \
+    "$licensedir/Luau-LICENSE"
+  install -Dm644 third_party/luau/lua_LICENSE.txt \
+    "$licensedir/Lua-LICENSE"
+  install -Dm644 third_party/material_color_utilities/LICENSE \
+    "$licensedir/Material-Color-Utilities-LICENSE"
+  install -Dm644 third_party/wuffs/LICENSE-APACHE \
+    "$licensedir/Wuffs-LICENSE-APACHE"
+  install -Dm644 third_party/wuffs/LICENSE-MIT \
+    "$licensedir/Wuffs-LICENSE-MIT"
+
+  # Runtime asset attribution/license notice.
+  install -Dm644 assets/fonts/tabler-icons-license.txt \
+    "$licensedir/Tabler-Icons-LICENSE"
+
+  # Preserve upstream credits for bundled branding and media assets.
+  install -Dm644 CREDITS.md \
+    "$docdir/CREDITS.md"
 }
