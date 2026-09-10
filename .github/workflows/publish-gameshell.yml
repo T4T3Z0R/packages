@@ -1,0 +1,647 @@
+name: Publish gameshell
+run-name: "GameShell ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || 'latest' }}"
+
+on:
+  pull_request:
+    paths:
+      - 'arch/gameshell/**'
+      - '.github/workflows/publish-gameshell.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'arch/gameshell/**'
+      - '.github/workflows/publish-gameshell.yml'
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Upstream GameShell release tag
+        required: true
+        default: latest
+        type: string
+  schedule:
+    - cron: '23 10 * * *'
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPOSITORY: phyver/GameShell
+  REPO_NAME: t4t3z0r
+  RELEASE_TAG: arch-repo
+  SIGNING_SUBKEY: A2A5AEC28C6D94EF2FB3EC75AC3E97B561D89610
+
+jobs:
+  detect:
+    name: Resolve upstream candidate
+    runs-on: ubuntu-latest
+
+    outputs:
+      update: ${{ steps.resolve.outputs.update }}
+      source_ref: ${{ steps.resolve.outputs.source_ref }}
+      source_sha: ${{ steps.resolve.outputs.source_sha }}
+      pkgver: ${{ steps.resolve.outputs.pkgver }}
+      pkgrel: ${{ steps.resolve.outputs.pkgrel }}
+      package_file: ${{ steps.resolve.outputs.package_file }}
+
+    steps:
+      - name: Checkout package infrastructure
+        uses: actions/checkout@v6
+
+      - name: Checkout upstream GameShell
+        uses: actions/checkout@v6
+        with:
+          repository: phyver/GameShell
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || 'latest' }}
+          fetch-depth: 0
+          path: source/GameShell
+
+      - name: Resolve version and update state
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || 'latest' }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$SOURCE_REF" =~ ^[0-9A-Za-z._+-]+$ ]]; then
+            echo "Invalid upstream ref: $SOURCE_REF" >&2
+            exit 1
+          fi
+
+          if ! git -C source/GameShell show-ref \
+            --verify --quiet "refs/tags/${SOURCE_REF}"
+          then
+            echo "Upstream ref is not a tag: $SOURCE_REF" >&2
+            exit 1
+          fi
+
+          source_sha="$(git -C source/GameShell rev-parse HEAD)"
+          ref_sha="$(git -C source/GameShell rev-parse "${SOURCE_REF}^{commit}")"
+
+          if [[ "$source_sha" != "$ref_sha" ]]; then
+            echo "Checked-out source does not match requested tag" >&2
+            exit 1
+          fi
+
+          base_tag="$(
+            git -C source/GameShell describe \
+              --tags --abbrev=0 --match 'v[0-9]*' "$source_sha"
+          )"
+          base_ver="${base_tag#v}"
+          revs="$(
+            git -C source/GameShell rev-list \
+              --count "${base_tag}..${source_sha}"
+          )"
+          short_sha="$(
+            git -C source/GameShell rev-parse --short=12 "$source_sha"
+          )"
+
+          if [[ "$revs" == 0 ]]; then
+            pkgver="$base_ver"
+          else
+            pkgver="${base_ver}.r${revs}.g${short_sha}"
+          fi
+
+          pkgrel="$(
+            awk -F= '$1 == "pkgrel" { print $2; exit }' \
+              arch/gameshell/PKGBUILD.in
+          )"
+          if [[ ! "$pkgrel" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Invalid pkgrel in PKGBUILD.in: $pkgrel" >&2
+            exit 1
+          fi
+
+          package_file="gameshell-${pkgver}-${pkgrel}-any.pkg.tar.zst"
+          package_exists=false
+          if gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets \
+            --jq '.assets[].name' \
+            | grep -Fxq "$package_file"
+          then
+            package_exists=true
+          fi
+
+          case "$GITHUB_EVENT_NAME" in
+            pull_request)
+              # Always validate recipe changes on a PR, even when this exact
+              # package version already exists in the rolling repository.
+              update=true
+              ;;
+            push)
+              # Publishing different bytes under an existing package version
+              # would be poisonous. Require pkgrel to move instead.
+              if [[ "$package_exists" == true ]]; then
+                echo "Package already exists: $package_file" >&2
+                echo "Bump pkgrel before publishing recipe changes." >&2
+                exit 1
+              fi
+              update=true
+              ;;
+            *)
+              if [[ "$package_exists" == true ]]; then
+                update=false
+              else
+                update=true
+              fi
+              ;;
+          esac
+
+          {
+            echo "source_ref=$SOURCE_REF"
+            echo "source_sha=$source_sha"
+            echo "pkgver=$pkgver"
+            echo "pkgrel=$pkgrel"
+            echo "package_file=$package_file"
+            echo "update=$update"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo '## GameShell update check'
+            echo
+            echo "- Upstream ref: \`$SOURCE_REF\`"
+            echo "- Upstream commit: \`$source_sha\`"
+            echo "- Package: \`$package_file\`"
+            echo "- Existing package: **$package_exists**"
+            echo "- Build required: **$update**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  validate:
+    name: Validate unsigned candidate
+    needs: detect
+    if: needs.detect.outputs.update == 'true'
+    runs-on: ubuntu-latest
+
+    container:
+      image: archlinux:latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install validation dependencies
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed \
+            base-devel bash gawk gettext git namcap
+
+      - name: Checkout package infrastructure
+        uses: actions/checkout@v6
+
+      - name: Checkout exact upstream source
+        uses: actions/checkout@v6
+        with:
+          repository: phyver/GameShell
+          ref: ${{ needs.detect.outputs.source_sha }}
+          fetch-depth: 0
+          path: source/GameShell
+
+      - name: Trust checked-out repositories
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory \
+            "$GITHUB_WORKSPACE/source/GameShell"
+
+      - name: Verify mutable upstream tag has not moved
+        env:
+          SOURCE_REF: ${{ needs.detect.outputs.source_ref }}
+          SOURCE_SHA: ${{ needs.detect.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+
+          git -C source/GameShell fetch --force origin \
+            "refs/tags/${SOURCE_REF}:refs/tags/${SOURCE_REF}"
+
+          current_ref_sha="$(
+            git -C source/GameShell rev-parse "${SOURCE_REF}^{commit}"
+          )"
+          checked_out_sha="$(git -C source/GameShell rev-parse HEAD)"
+
+          [[ "$checked_out_sha" == "$SOURCE_SHA" ]]
+          if [[ "$current_ref_sha" != "$SOURCE_SHA" ]]; then
+            echo "Upstream tag moved after candidate detection." >&2
+            echo "Refusing to publish a stale candidate." >&2
+            exit 1
+          fi
+
+      - name: Generate package sources
+        env:
+          SOURCE_SHA: ${{ needs.detect.outputs.source_sha }}
+          PKGVER: ${{ needs.detect.outputs.pkgver }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p build/gameshell evidence
+
+          (
+            cd source/GameShell
+            ./utils/gameshell_archive.sh \
+              -N "$GITHUB_WORKSPACE/build/gameshell/gameshell"
+          )
+
+          cp source/GameShell/LICENSE build/gameshell/LICENSE
+          cp arch/gameshell/gameshell-launcher \
+            build/gameshell/gameshell-launcher
+          cp arch/gameshell/README.md \
+            build/gameshell/README.packaging.md
+
+          git -C source/GameShell archive \
+            --format=tar.gz \
+            --prefix=GameShell-source/ \
+            "$SOURCE_SHA" \
+            > build/gameshell/GameShell-source.tar.gz
+
+          archive_sha256="$(
+            sha256sum build/gameshell/gameshell.sh | awk '{print $1}'
+          )"
+          launcher_sha256="$(
+            sha256sum build/gameshell/gameshell-launcher | awk '{print $1}'
+          )"
+          source_sha256="$(
+            sha256sum build/gameshell/GameShell-source.tar.gz | awk '{print $1}'
+          )"
+          license_sha256="$(
+            sha256sum build/gameshell/LICENSE | awk '{print $1}'
+          )"
+          readme_sha256="$(
+            sha256sum build/gameshell/README.packaging.md | awk '{print $1}'
+          )"
+
+          sed \
+            -e "s/@PKGVER@/${PKGVER}/g" \
+            -e "s/@SOURCE_SHA@/${SOURCE_SHA}/g" \
+            -e "s/@ARCHIVE_SHA256@/${archive_sha256}/g" \
+            -e "s/@LAUNCHER_SHA256@/${launcher_sha256}/g" \
+            -e "s/@SOURCE_SHA256@/${source_sha256}/g" \
+            -e "s/@LICENSE_SHA256@/${license_sha256}/g" \
+            -e "s/@README_SHA256@/${readme_sha256}/g" \
+            arch/gameshell/PKGBUILD.in \
+            > build/gameshell/PKGBUILD
+
+          chmod 755 \
+            build/gameshell/gameshell.sh \
+            build/gameshell/gameshell-launcher
+
+          printf '%s  %s\n' \
+            "$archive_sha256" gameshell.sh \
+            > evidence/game-archive-SHA256SUMS
+          printf '%s  %s\n' \
+            "$source_sha256" GameShell-source.tar.gz \
+            > evidence/source-SHA256SUMS
+
+      - name: Build unsigned package
+        run: |
+          set -euo pipefail
+          useradd -m builduser
+          chown -R builduser:builduser build
+          su builduser -c "
+            cd '$GITHUB_WORKSPACE/build/gameshell'
+            makepkg --noconfirm --cleanbuild
+          "
+
+      - name: Inspect and smoke-test candidate
+        env:
+          SOURCE_SHA: ${{ needs.detect.outputs.source_sha }}
+          EXPECTED_PACKAGE: ${{ needs.detect.outputs.package_file }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p candidate evidence/package-root
+          pkg="build/gameshell/${EXPECTED_PACKAGE}"
+          test -f "$pkg"
+          cp "$pkg" candidate/
+
+          pacman -Qip "$pkg" | tee evidence/package-info.txt
+          bsdtar -tf "$pkg" \
+            | sed 's#^\./##' \
+            | tee evidence/package-files.txt
+          bsdtar -xOf "$pkg" .PKGINFO > evidence/PKGINFO
+
+          required_files=(
+            usr/bin/gameshell
+            usr/share/gameshell/gameshell.sh
+            "usr/share/gameshell/source/GameShell-${SOURCE_SHA}.tar.gz"
+            usr/share/licenses/gameshell/LICENSE
+            usr/share/doc/gameshell/README.packaging.md
+          )
+          for required in "${required_files[@]}"; do
+            grep -Fxq "$required" evidence/package-files.txt || {
+              echo "Required package file missing: $required" >&2
+              exit 1
+            }
+          done
+
+          grep -Fxq 'pkgname = gameshell' evidence/PKGINFO
+          grep -Fxq 'arch = any' evidence/PKGINFO
+          grep -Fxq 'license = GPL-3.0-only' evidence/PKGINFO
+
+          namcap build/gameshell/PKGBUILD \
+            > evidence/namcap-PKGBUILD.txt 2>&1 || true
+          namcap "$pkg" \
+            > evidence/namcap-package.txt 2>&1 || true
+          if grep -Eq ' E: ' \
+            evidence/namcap-PKGBUILD.txt \
+            evidence/namcap-package.txt
+          then
+            cat evidence/namcap-PKGBUILD.txt >&2
+            cat evidence/namcap-package.txt >&2
+            exit 1
+          fi
+
+          pacman -U --noconfirm "$pkg"
+          install -d -m700 -o builduser -g builduser \
+            /home/builduser/.local/share
+          su builduser -c '
+            set -e
+            export HOME=/home/builduser
+            export XDG_DATA_HOME=/home/builduser/.local/share
+            gameshell -V
+            gameshell -h >/dev/null
+            test -x "$XDG_DATA_HOME/gameshell/gameshell.sh"
+            cmp -s /usr/share/gameshell/gameshell.sh \
+              "$XDG_DATA_HOME/gameshell/gameshell.sh"
+          '
+
+          package_sha256="$(sha256sum "$pkg" | awk '{print $1}')"
+          printf '%s  %s\n' \
+            "$package_sha256" "$EXPECTED_PACKAGE" \
+            > evidence/package-SHA256SUMS
+
+          {
+            echo "PACKAGE_FILE=$EXPECTED_PACKAGE"
+            echo "PACKAGE_SHA256=$package_sha256"
+          } >> "$GITHUB_ENV"
+
+      - name: Candidate summary
+        env:
+          SOURCE_REF: ${{ needs.detect.outputs.source_ref }}
+          SOURCE_SHA: ${{ needs.detect.outputs.source_sha }}
+        run: |
+          {
+            echo '## GameShell unsigned candidate'
+            echo
+            echo "- Upstream ref: \`$SOURCE_REF\`"
+            echo "- Source commit: \`$SOURCE_SHA\`"
+            echo "- Package: \`$PACKAGE_FILE\`"
+            echo "- Package SHA-256: \`$PACKAGE_SHA256\`"
+            echo '- Signed: **NO**'
+            echo '- Published: **NO**'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload unsigned candidate and evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: gameshell-${{ needs.detect.outputs.pkgver }}-${{ needs.detect.outputs.pkgrel }}-candidate
+          path: |
+            candidate/
+            evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+  approval-ready:
+    name: Notify signing approval ready
+    needs:
+      - detect
+      - validate
+    if: >-
+      needs.detect.outputs.update == 'true' &&
+      github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send Pushover approval notification
+        env:
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          PKGVER: ${{ needs.detect.outputs.pkgver }}
+          PKGREL: ${{ needs.detect.outputs.pkgrel }}
+        run: |
+          set -euo pipefail
+          test -n "$PUSHOVER_APP_TOKEN"
+          test -n "$PUSHOVER_USER_KEY"
+
+          curl \
+            --fail --silent --show-error \
+            --form-string "token=$PUSHOVER_APP_TOKEN" \
+            --form-string "user=$PUSHOVER_USER_KEY" \
+            --form-string "title=Package approval required" \
+            --form-string \
+              "message=gameshell ${PKGVER}-${PKGREL} passed validation and is ready for signing approval." \
+            --form-string \
+              "url=https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --form-string "url_title=Review deployment" \
+            https://api.pushover.net/1/messages.json
+
+  publish:
+    name: Sign and publish approved candidate
+    needs:
+      - detect
+      - validate
+      - approval-ready
+    if: >-
+      needs.detect.outputs.update == 'true' &&
+      github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    environment:
+      name: arch-repo-publish
+
+    permissions:
+      contents: write
+
+    concurrency:
+      group: arch-repo-publish
+      cancel-in-progress: false
+
+    container:
+      image: archlinux:latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install publishing dependencies
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed \
+            git github-cli gnupg
+
+      - name: Checkout package infrastructure
+        uses: actions/checkout@v6
+
+      - name: Trust checked-out repository
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Download exact validated candidate
+        uses: actions/download-artifact@v8
+        with:
+          name: gameshell-${{ needs.detect.outputs.pkgver }}-${{ needs.detect.outputs.pkgrel }}-candidate
+          path: validated
+
+      - name: Verify validated candidate
+        env:
+          EXPECTED_PACKAGE: ${{ needs.detect.outputs.package_file }}
+        run: |
+          set -euo pipefail
+          checksum_file=validated/evidence/package-SHA256SUMS
+          test -s "$checksum_file"
+          read -r expected_sha package_file < "$checksum_file"
+          [[ "$package_file" == "$EXPECTED_PACKAGE" ]]
+
+          pkg="validated/candidate/${package_file}"
+          test -f "$pkg"
+          actual_sha="$(sha256sum "$pkg" | awk '{print $1}')"
+          [[ "$actual_sha" == "$expected_sha" ]]
+
+          mkdir -p package-output
+          cp "$pkg" package-output/
+          {
+            echo "PACKAGE_FILE=$package_file"
+            echo "PACKAGE_SHA256=$actual_sha"
+          } >> "$GITHUB_ENV"
+
+      - name: Import repository signing subkey
+        env:
+          ARCH_REPO_SIGNING_KEY: ${{ secrets.ARCH_REPO_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$ARCH_REPO_SIGNING_KEY"
+          printf '%s\n' "$ARCH_REPO_SIGNING_KEY" | gpg --batch --import
+          gpg --batch --list-secret-keys "$SIGNING_SUBKEY"
+
+      - name: Sign approved package
+        env:
+          ARCH_REPO_SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_SIGNING_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          pkg="package-output/${PACKAGE_FILE}"
+          printf '%s' "$ARCH_REPO_SIGNING_PASSPHRASE" \
+            | gpg --batch --yes --pinentry-mode loopback \
+                --passphrase-fd 0 \
+                --local-user "${SIGNING_SUBKEY}!" \
+                --output "${pkg}.sig" \
+                --detach-sign "$pkg"
+          gpg --verify "${pkg}.sig" "$pkg"
+
+      - name: Assemble signed repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ARCH_REPO_SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_SIGNING_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          mkdir -p repo-output
+          gh release view "$RELEASE_TAG" >/dev/null
+          gh release download "$RELEASE_TAG" \
+            --pattern '*.pkg.tar.zst' \
+            --pattern '*.pkg.tar.zst.sig' \
+            --dir repo-output
+
+          shopt -s nullglob
+          existing_packages=(repo-output/*.pkg.tar.zst)
+          for existing_pkg in "${existing_packages[@]}"; do
+            existing_sig="${existing_pkg}.sig"
+            test -f "$existing_sig" || {
+              echo "Existing package lacks signature: $existing_pkg" >&2
+              exit 1
+            }
+            gpg --verify "$existing_sig" "$existing_pkg"
+          done
+
+          rm -f \
+            repo-output/gameshell-*.pkg.tar.zst \
+            repo-output/gameshell-*.pkg.tar.zst.sig
+          cp "package-output/${PACKAGE_FILE}" repo-output/
+          cp "package-output/${PACKAGE_FILE}.sig" repo-output/
+
+          cd repo-output
+          packages=(*.pkg.tar.zst)
+          (( ${#packages[@]} > 0 ))
+          repo-add --include-sigs \
+            "${REPO_NAME}.db.tar.zst" "${packages[@]}"
+
+          rm -f "${REPO_NAME}.db" "${REPO_NAME}.files"
+          cp -L "${REPO_NAME}.db.tar.zst" "${REPO_NAME}.db"
+          cp -L "${REPO_NAME}.files.tar.zst" "${REPO_NAME}.files"
+          rm -f \
+            "${REPO_NAME}.db.tar.zst" \
+            "${REPO_NAME}.files.tar.zst"
+
+          sign_file() {
+            local file="$1"
+            printf '%s' "$ARCH_REPO_SIGNING_PASSPHRASE" \
+              | gpg --batch --yes --pinentry-mode loopback \
+                  --passphrase-fd 0 \
+                  --local-user "${SIGNING_SUBKEY}!" \
+                  --output "${file}.sig" \
+                  --detach-sign "$file"
+            gpg --verify "${file}.sig" "$file"
+          }
+          sign_file "${REPO_NAME}.db"
+          sign_file "${REPO_NAME}.files"
+
+          cp "$GITHUB_WORKSPACE/arch/keys/t4t3z0r-package-signing.asc" .
+          mapfile -d '' checksum_files < <(
+            find . -maxdepth 1 -type f ! -name SHA256SUMS \
+              -printf '%f\0' | sort -z
+          )
+          sha256sum "${checksum_files[@]}" > SHA256SUMS
+
+      - name: Publish rolling Arch repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" \
+            "repo-output/${PACKAGE_FILE}" \
+            "repo-output/${PACKAGE_FILE}.sig" \
+            --clobber
+
+          gh release upload "$RELEASE_TAG" \
+            repo-output/t4t3z0r-package-signing.asc \
+            repo-output/SHA256SUMS \
+            repo-output/t4t3z0r.files \
+            repo-output/t4t3z0r.files.sig \
+            --clobber
+
+          # Database last, so clients see either the old complete state or
+          # the new complete state rather than a half-published repository.
+          gh release upload "$RELEASE_TAG" \
+            repo-output/t4t3z0r.db \
+            repo-output/t4t3z0r.db.sig \
+            --clobber
+
+          mapfile -t desired < <(
+            find repo-output -maxdepth 1 -type f -printf '%f\n' | sort
+          )
+          mapfile -t existing < <(
+            gh release view "$RELEASE_TAG" \
+              --json assets --jq '.assets[].name'
+          )
+          for asset in "${existing[@]}"; do
+            if ! printf '%s\n' "${desired[@]}" | grep -Fxq -- "$asset"; then
+              gh release delete-asset "$RELEASE_TAG" "$asset" --yes
+            fi
+          done
+
+      - name: Publication summary
+        env:
+          SOURCE_REF: ${{ needs.detect.outputs.source_ref }}
+          SOURCE_SHA: ${{ needs.detect.outputs.source_sha }}
+        run: |
+          {
+            echo '## Published GameShell'
+            echo
+            echo "- Upstream ref: \`$SOURCE_REF\`"
+            echo "- Source commit: \`$SOURCE_SHA\`"
+            echo "- Package: \`$PACKAGE_FILE\`"
+            echo "- Package SHA-256: \`$PACKAGE_SHA256\`"
+            echo "- Repository: \`$REPO_NAME\`"
+            echo '- Human signing approval: **PASSED**'
+          } >> "$GITHUB_STEP_SUMMARY"
