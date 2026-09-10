@@ -1,0 +1,59 @@
+pkgname=gameshell
+pkgver=@PKGVER@
+pkgrel=1
+pkgdesc='A game to teach the Unix shell'
+arch=('any')
+url='https://github.com/phyver/GameShell'
+license=('GPL-3.0-only')
+
+depends=(
+  'bash'
+  'gawk'
+  'gettext'
+)
+
+optdepends=(
+  'man-db: man-page missions'
+  'nano: nano editor mission'
+  'procps-ng: process-management missions'
+  'psmisc: pstree mission'
+  'tree: tree mission'
+  'util-linux: cal mission'
+  'xorg-xeyes: xeyes/background-job mission under X11 or XWayland'
+  'zsh: alternative GameShell shell (-Z)'
+)
+
+_source_sha='@SOURCE_SHA@'
+
+source=(
+  'gameshell.sh'
+  'gameshell-launcher'
+  'GameShell-source.tar.gz'
+  'LICENSE'
+  'README.packaging.md'
+)
+
+sha256sums=(
+  '@ARCHIVE_SHA256@'
+  '@LAUNCHER_SHA256@'
+  '@SOURCE_SHA256@'
+  '@LICENSE_SHA256@'
+  '@README_SHA256@'
+)
+
+package() {
+  install -Dm755 gameshell.sh \
+    "$pkgdir/usr/share/gameshell/gameshell.sh"
+
+  install -Dm755 gameshell-launcher \
+    "$pkgdir/usr/bin/gameshell"
+
+  install -Dm644 GameShell-source.tar.gz \
+    "$pkgdir/usr/share/gameshell/source/GameShell-${_source_sha}.tar.gz"
+
+  install -Dm644 LICENSE \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+  install -Dm644 README.packaging.md \
+    "$pkgdir/usr/share/doc/$pkgname/README.packaging.md"
+}

@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly packaged_archive='/usr/share/gameshell/gameshell.sh'
+
+if [[ ! -r "$packaged_archive" ]]; then
+  printf 'gameshell: packaged game archive is missing: %s\n' \
+    "$packaged_archive" >&2
+  exit 1
+fi
+
+: "${HOME:?gameshell: HOME is not set}"
+
+data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+state_dir="${GAMESHELL_HOME:-$data_home/gameshell}"
+starter="$state_dir/gameshell.sh"
+
+mkdir -p "$state_dir"
+chmod 700 "$state_dir"
+
+if [[ ! -f "$starter" ]] || ! cmp -s "$packaged_archive" "$starter"; then
+  tmp_starter="$state_dir/.gameshell.sh.$$"
+  trap 'rm -f "$tmp_starter"' EXIT
+  install -m700 "$packaged_archive" "$tmp_starter"
+  mv -f "$tmp_starter" "$starter"
+  trap - EXIT
+fi
+
+# GameShell save archives contain both the player's progress and the copy of
+# GameShell that created them. Prefer the newest save so a Pacman upgrade does
+# not silently start a fresh game with the newly packaged starter archive.
+shopt -s nullglob
+saves=("$state_dir"/gameshell-save*.sh)
+shopt -u nullglob
+
+if (( ${#saves[@]} > 0 )); then
+  newest_save="${saves[0]}"
+  for save in "${saves[@]:1}"; do
+    if [[ "$save" -nt "$newest_save" ]]; then
+      newest_save="$save"
+    fi
+  done
+  exec "$newest_save" "$@"
+fi
+
+exec "$starter" "$@"
