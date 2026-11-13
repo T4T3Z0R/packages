@@ -47,7 +47,7 @@ jobs:
             libqalculate libxml2 \
             md4c tomlplusplus libical \
             nlohmann-json stb \
-            jemalloc just clang clang22
+            jemalloc just clang
 
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
@@ -116,10 +116,10 @@ jobs:
             cd '$GITHUB_WORKSPACE/source/noctalia'
 
             mapfile -d '' files < <(
-              find src \( -name '*.cpp' -o -name '*.h' \) -print0
+              find src lib \( -name '*.cpp' -o -name '*.h' \) -print0
             )
 
-            /usr/lib/llvm22/bin/clang-format --dry-run -Werror \"\${files[@]}\"
+            clang-format --dry-run -Werror \"\${files[@]}\"
           "
 
       - name: Generate package source
