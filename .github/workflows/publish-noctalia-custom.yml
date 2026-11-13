@@ -307,9 +307,9 @@ jobs:
             "third_party/luau/LICENSE.txt|usr/share/licenses/noctalia-custom/Luau-LICENSE"
             "third_party/luau/lua_LICENSE.txt|usr/share/licenses/noctalia-custom/Lua-LICENSE"
             "third_party/material_color_utilities/LICENSE|usr/share/licenses/noctalia-custom/Material-Color-Utilities-LICENSE"
-            "third_party/wuffs/LICENSE-APACHE|usr/share/licenses/noctalia-custom/Wuffs-LICENSE-APACHE"
-            "third_party/wuffs/LICENSE-MIT|usr/share/licenses/noctalia-custom/Wuffs-LICENSE-MIT"
-            "assets/fonts/tabler-icons-license.txt|usr/share/licenses/noctalia-custom/Tabler-Icons-LICENSE"
+            "lib/third_party/wuffs/LICENSE-APACHE|usr/share/licenses/noctalia-custom/Wuffs-LICENSE-APACHE"
+            "lib/third_party/wuffs/LICENSE-MIT|usr/share/licenses/noctalia-custom/Wuffs-LICENSE-MIT"
+            "lib/assets/fonts/tabler-icons-license.txt|usr/share/licenses/noctalia-custom/Tabler-Icons-LICENSE"
             "CREDITS.md|usr/share/doc/noctalia-custom/CREDITS.md"
           )
 

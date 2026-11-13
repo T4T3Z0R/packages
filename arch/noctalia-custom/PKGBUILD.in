@@ -96,13 +96,13 @@ package() {
     "$licensedir/Lua-LICENSE"
   install -Dm644 third_party/material_color_utilities/LICENSE \
     "$licensedir/Material-Color-Utilities-LICENSE"
-  install -Dm644 third_party/wuffs/LICENSE-APACHE \
+  install -Dm644 lib/third_party/wuffs/LICENSE-APACHE \
     "$licensedir/Wuffs-LICENSE-APACHE"
-  install -Dm644 third_party/wuffs/LICENSE-MIT \
+  install -Dm644 lib/third_party/wuffs/LICENSE-MIT \
     "$licensedir/Wuffs-LICENSE-MIT"
 
   # Runtime asset attribution/license notice.
-  install -Dm644 assets/fonts/tabler-icons-license.txt \
+  install -Dm644 lib/assets/fonts/tabler-icons-license.txt \
     "$licensedir/Tabler-Icons-LICENSE"
 
   # Preserve upstream credits for bundled branding and media assets.
