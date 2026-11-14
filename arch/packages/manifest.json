@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "packages": {
+    "yazi": {
+      "upstream": "sxyazi/yazi",
+      "source_ref": "v26.9.1",
+      "release_policy": "stable-tag",
+      "license": "MIT",
+      "recipe": "arch/packages/yazi/PKGBUILD.in",
+      "status": "candidate",
+      "auto_publish": false
+    }
+  }
+}
