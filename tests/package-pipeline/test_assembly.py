@@ -36,6 +36,11 @@ class AssemblyTests(unittest.TestCase):
             "PACKAGE_NAME": name,
             "PACKAGE_FILE": filename,
             "TEST_ROOT": str(self.root),
+            "RELEASE_TAG": "test-release",
+            "REPO_NAME": "test-repo",
+            "SIGNING_SUBKEY": "test-key",
+            "ARCH_REPO_SIGNING_PASSPHRASE": "test-passphrase",
+            "GITHUB_WORKSPACE": str(self.root),
         })
         return subprocess.run(
             ["bash", str(SCRIPT)],

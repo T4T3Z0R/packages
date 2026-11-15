@@ -3,6 +3,11 @@ set -euo pipefail
 
 : "${PACKAGE_NAME:?PACKAGE_NAME is required}"
 : "${PACKAGE_FILE:?PACKAGE_FILE is required}"
+: "${RELEASE_TAG:?RELEASE_TAG is required}"
+: "${REPO_NAME:?REPO_NAME is required}"
+: "${SIGNING_SUBKEY:?SIGNING_SUBKEY is required}"
+: "${ARCH_REPO_SIGNING_PASSPHRASE:?Signing passphrase is required}"
+: "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}"
 
 if [[ ! "$PACKAGE_NAME" =~ ^[a-z][a-z0-9-]*$ ]]; then
   echo "Invalid PACKAGE_NAME: $PACKAGE_NAME" >&2

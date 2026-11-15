@@ -29,12 +29,20 @@ jobs:
 
     steps:
       - name: Install test dependencies
-        run: pacman -Syu --noconfirm --needed python bash git
+        run: pacman -Syu --noconfirm --needed python bash git gnupg libarchive zstd
 
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Verify package tooling
+        run: |
+          set -eu
+          for tool in bash python git gpg bsdtar zstd repo-add repo-remove makepkg; do
+            command -v "$tool" >/dev/null
+            echo "PASS: $tool"
+          done
 
       - name: Verify shell syntax
         run: bash -n scripts/package-pipeline/assemble-repository.sh
@@ -42,5 +50,8 @@ jobs:
       - name: Validate manifest
         run: python scripts/package-pipeline/validate_manifest.py
 
-      - name: Run test suite
-        run: python -m unittest discover -s tests/package-pipeline -p "test_*.py" -v
+      - name: Run unit tests
+        run: python -m unittest discover -s tests/package-pipeline -p "test_assembly.py" -v && python -m unittest discover -s tests/package-pipeline -p "test_manifest.py" -v && python -m unittest discover -s tests/package-pipeline -p "test_workflow_parity.py" -v
+
+      - name: Run real-package integration tests
+        run: python -m unittest discover -s tests/package-pipeline -p "test_integration.py" -v
