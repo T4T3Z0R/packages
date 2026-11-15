@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 ASSEMBLER = ROOT / "scripts/package-pipeline/assemble-repository.sh"
+ARCHIVER = ROOT / "scripts/package-pipeline/archive-repository.py"
 
 
 class RepositoryIntegrationTests(unittest.TestCase):
@@ -260,6 +261,70 @@ class RepositoryIntegrationTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("public key is missing", result.stderr)
         self.assertFalse((self.root / "gh-mutation").exists())
+
+    def run_archive_preflight(self, package="yazi"):
+        return self.run_command([
+            "python3", str(ARCHIVER),
+            "--package", package,
+            "--fingerprint", self.key,
+            "--staging", str(self.root / "archive-output"),
+        ])
+
+    def test_archive_preflight_valid_signed_package(self):
+        result = self.assemble()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        result = self.run_archive_preflight()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        plan = __import__("json").loads(result.stdout)
+        self.assertTrue(plan["verified"])
+        self.assertTrue(plan["dry_run"])
+        self.assertEqual(
+            plan["file"], "yazi-1.0-1-any.pkg.tar.zst"
+        )
+        self.assertEqual(plan["previous_versions_to_keep"], 0)
+        self.assertFalse(plan["archive_required"])
+
+    def test_archive_preflight_rejects_wrong_signer(self):
+        result = self.assemble()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        package = (
+            self.root / "archive-output/yazi-1.0-1-any.pkg.tar.zst"
+        )
+        self.make_unauthorized_signature(package)
+
+        result = self.run_archive_preflight()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Unauthorized or ambiguous package signature",
+            result.stderr,
+        )
+
+    def test_archive_preflight_rejects_missing_signature(self):
+        result = self.assemble()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        signature = (
+            self.root / "archive-output/yazi-1.0-1-any.pkg.tar.zst.sig"
+        )
+        signature.unlink()
+
+        result = self.run_archive_preflight()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Expected exactly one staged package/signature pair",
+            result.stderr,
+        )
+
+    def test_archive_preflight_rejects_identity_mismatch(self):
+        result = self.assemble()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        result = self.run_archive_preflight("gameshell")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Staged package identity mismatch", result.stderr)
 
     def test_unauthorized_candidate_signer(self):
         package = self.root / "package-output" / self.env["PACKAGE_FILE"]
