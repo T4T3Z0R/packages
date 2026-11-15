@@ -29,7 +29,7 @@ jobs:
 
     steps:
       - name: Install test dependencies
-        run: pacman -Syu --noconfirm --needed python bash git gnupg libarchive zstd
+        run: pacman -Syu --noconfirm --needed python bash git gnupg libarchive zstd diffutils
 
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -39,7 +39,7 @@ jobs:
       - name: Verify package tooling
         run: |
           set -eu
-          for tool in bash python git gpg bsdtar zstd repo-add repo-remove makepkg; do
+          for tool in bash python git gpg bsdtar zstd repo-add repo-remove makepkg diff; do
             command -v "$tool" >/dev/null
             echo "PASS: $tool"
           done
