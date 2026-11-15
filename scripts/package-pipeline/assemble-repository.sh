@@ -94,6 +94,46 @@ fi
 
 verify_signed_file "${candidate}.sig" "$candidate"
 
+# Optional additional packages from the same validated build.
+candidate_files=("$PACKAGE_FILE")
+candidate_names=("$PACKAGE_NAME")
+
+declare -A selected_names=()
+selected_names["$PACKAGE_NAME"]=1
+
+if [[ -n "${ADDITIONAL_PACKAGE_FILES:-}" ]]; then
+  if [[ ! "$ADDITIONAL_PACKAGE_FILES" =~ ^[A-Za-z0-9._+-]+[.]pkg[.]tar[.]zst([ ]+[A-Za-z0-9._+-]+[.]pkg[.]tar[.]zst)*$ ]]; then
+    echo "Invalid ADDITIONAL_PACKAGE_FILES" >&2
+    exit 1
+  fi
+
+  read -r -a extra_files <<< "$ADDITIONAL_PACKAGE_FILES"
+
+  for extra_file in "${extra_files[@]}"; do
+    extra_path="package-output/$extra_file"
+
+    test -f "$extra_path"
+    test -f "${extra_path}.sig"
+
+    extra_name="$(
+      bsdtar -xOf "$extra_path" .PKGINFO |
+        sed -n 's/^pkgname = //p'
+    )"
+
+    if [[ ! "$extra_name" =~ ^[a-z][a-z0-9-]*$ ||
+          -n "${selected_names[$extra_name]+present}" ]]; then
+      echo "Invalid or duplicate candidate identity: $extra_name" >&2
+      exit 1
+    fi
+
+    verify_signed_file "${extra_path}.sig" "$extra_path"
+
+    selected_names["$extra_name"]=1
+    candidate_files+=("$extra_file")
+    candidate_names+=("$extra_name")
+  done
+fi
+
 
 mkdir -p repo-output
 
@@ -146,6 +186,7 @@ done
 
 # Track the displaced package independently of archive staging.
 displaced_name=""
+declare -A displaced_by_name=()
 
 # Remove only versions of the selected package.
 for existing_pkg in "${existing_packages[@]}"; do
@@ -154,16 +195,23 @@ for existing_pkg in "${existing_packages[@]}"; do
       sed -n "s/^pkgname = //p"
   )"
 
-  if [[ "$existing_name" == "$PACKAGE_NAME" ]]; then
-    displaced_name="${existing_pkg##*/}"
+  if [[ -n "${selected_names[$existing_name]+present}" ]]; then
+    displaced_by_name["$existing_name"]="${existing_pkg##*/}"
+
+    if [[ "$existing_name" == "$PACKAGE_NAME" ]]; then
+      displaced_name="${existing_pkg##*/}"
+    fi
+
     mkdir -p archive-output
     cp -- "$existing_pkg" "${existing_pkg}.sig" archive-output/
     rm -f -- "$existing_pkg" "${existing_pkg}.sig"
   fi
 done
 
-cp "package-output/${PACKAGE_FILE}" repo-output/
-cp "package-output/${PACKAGE_FILE}.sig" repo-output/
+for new_file in "${candidate_files[@]}"; do
+  cp "package-output/$new_file" repo-output/
+  cp "package-output/${new_file}.sig" repo-output/
+done
 
 cd repo-output
 
@@ -231,4 +279,20 @@ sha256sum "${checksum_files[@]}" \
   > SHA256SUMS
 
 # Written only after successful repository assembly.
-printf "%s\n" "$PACKAGE_NAME" "$PACKAGE_FILE" "$displaced_name" > ../archive-state.txt
+if (( ${#candidate_files[@]} == 1 )); then
+  printf '%s\n' "$PACKAGE_NAME" "$PACKAGE_FILE" "$displaced_name" \
+    > ../archive-state.txt
+else
+  {
+    printf '%s\n' 'batch-v2'
+
+    for i in "${!candidate_files[@]}"; do
+      name="${candidate_names[i]}"
+
+      printf '%s\n' \
+        "$name" \
+        "${candidate_files[i]}" \
+        "${displaced_by_name[$name]:-}"
+    done
+  } > ../archive-state.txt
+fi

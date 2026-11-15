@@ -201,6 +201,159 @@ class RepositoryIntegrationTests(unittest.TestCase):
             (self.root / "gh-mutation").exists()
         )
 
+    def test_batch_replaces_two_packages(self):
+        extra = "yazi-extra-2.0-1-any.pkg.tar.zst"
+        self.make_package(
+            "yazi-extra", "2.0", self.root / "package-output"
+        )
+        self.env["ADDITIONAL_PACKAGE_FILES"] = extra
+
+        result = self.assemble()
+        self.assertEqual(
+            result.returncode, 0, result.stderr + result.stdout
+        )
+
+        output = self.root / "repo-output"
+        self.assertEqual(
+            {p.name for p in output.glob("*.pkg.tar.zst")},
+            {
+                "yazi-2.0-1-any.pkg.tar.zst",
+                extra,
+                "broot-1.0-1-any.pkg.tar.zst",
+            },
+        )
+
+        state = (
+            self.root / "archive-state.txt"
+        ).read_text().splitlines()
+
+        self.assertEqual(state, [
+            "batch-v2",
+            "yazi",
+            "yazi-2.0-1-any.pkg.tar.zst",
+            "yazi-1.0-1-any.pkg.tar.zst",
+            "yazi-extra",
+            extra,
+            "yazi-extra-1.0-1-any.pkg.tar.zst",
+        ])
+
+        archive = self.root / "archive-output"
+
+        for name in ("yazi", "yazi-extra"):
+            old = f"{name}-1.0-1-any.pkg.tar.zst"
+
+            self.assertEqual(
+                (archive / old).read_bytes(),
+                (self.fixture / old).read_bytes(),
+            )
+
+            self.run_command([
+                "gpg", "--verify",
+                str(archive / (old + ".sig")),
+                str(archive / old),
+            ], check=True)
+
+        self.assertEqual(
+            {p.name for p in archive.iterdir()},
+            {
+                "yazi-1.0-1-any.pkg.tar.zst",
+                "yazi-1.0-1-any.pkg.tar.zst.sig",
+                "yazi-extra-1.0-1-any.pkg.tar.zst",
+                "yazi-extra-1.0-1-any.pkg.tar.zst.sig",
+            },
+        )
+
+        db = self.run_command([
+            "bsdtar", "-tf", str(output / "test-repo.db")
+        ], check=True).stdout
+
+        for name in (
+            "yazi-2.0-1",
+            "yazi-extra-2.0-1",
+            "broot-1.0-1",
+        ):
+            self.assertIn(name + "/desc", db)
+
+        for name in ("yazi-1.0-1", "yazi-extra-1.0-1"):
+            self.assertNotIn(name + "/desc", db)
+
+        self.assertFalse((self.root / "gh-mutation").exists())
+
+    def test_batch_adds_package_without_old_version(self):
+        extra = "wezterm-debug-2.0-1-any.pkg.tar.zst"
+        self.make_package(
+            "wezterm-debug", "2.0", self.root / "package-output"
+        )
+        self.env["ADDITIONAL_PACKAGE_FILES"] = extra
+
+        result = self.assemble()
+        self.assertEqual(
+            result.returncode, 0, result.stderr + result.stdout
+        )
+
+        state = (
+            self.root / "archive-state.txt"
+        ).read_text().splitlines()
+
+        self.assertEqual(state, [
+            "batch-v2",
+            "yazi",
+            "yazi-2.0-1-any.pkg.tar.zst",
+            "yazi-1.0-1-any.pkg.tar.zst",
+            "wezterm-debug",
+            extra,
+            "",
+        ])
+
+        self.assertTrue(
+            (self.root / "repo-output" / extra).is_file()
+        )
+        self.assertFalse((self.root / "gh-mutation").exists())
+
+    def test_batch_missing_extra_signature(self):
+        extra = "yazi-extra-2.0-1-any.pkg.tar.zst"
+        self.make_package(
+            "yazi-extra", "2.0", self.root / "package-output"
+        )
+        self.env["ADDITIONAL_PACKAGE_FILES"] = extra
+        (self.root / "package-output" / (extra + ".sig")).unlink()
+
+        result = self.assemble()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / "gh-mutation").exists())
+        self.assertFalse(
+            (self.root / "repo-output/test-repo.db").exists()
+        )
+
+    def test_batch_duplicate_candidate_identity(self):
+        self.env["ADDITIONAL_PACKAGE_FILES"] = (
+            self.env["PACKAGE_FILE"]
+        )
+
+        result = self.assemble()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "duplicate candidate identity", result.stderr.lower()
+        )
+        self.assertFalse((self.root / "gh-mutation").exists())
+
+    def test_batch_unauthorized_extra_signature(self):
+        extra = self.make_package(
+            "yazi-extra", "2.0", self.root / "package-output"
+        )
+        self.env["ADDITIONAL_PACKAGE_FILES"] = extra.name
+        self.make_unauthorized_signature(extra)
+
+        result = self.assemble()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Unauthorized signing fingerprint", result.stderr
+        )
+        self.assertFalse((self.root / "gh-mutation").exists())
+        self.assertFalse(
+            (self.root / "repo-output/test-repo.db").exists()
+        )
+
     def test_successful_replacement(self):
         result = self.assemble()
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
