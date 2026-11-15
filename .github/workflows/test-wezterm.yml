@@ -1,0 +1,120 @@
+name: Test WezTerm package
+
+on:
+  pull_request:
+    paths:
+      - 'arch/wezterm/**'
+      - '.github/workflows/test-wezterm.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and validate WezTerm
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    container:
+      image: archlinux:latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Arch build dependencies
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed \
+            base-devel cargo cmake git pkgconf python \
+            bash fontconfig libgcc glib2 glibc \
+            hicolor-icon-theme libgit2 libssh2 \
+            libx11 libxcb libxkbcommon libxkbcommon-x11 \
+            openssl ttf-jetbrains-mono ttf-roboto \
+            wayland xcb-util xcb-util-image zlib zstd
+
+      - name: Checkout package repository
+        uses: actions/checkout@v6
+
+      - name: Verify recipe
+        run: |
+          set -euo pipefail
+          bash -n arch/wezterm/PKGBUILD
+          grep -Fx \
+            '_commit=e1eae81a56be8b5487dc77a29616afa568fb57b7' \
+            arch/wezterm/PKGBUILD
+
+      - name: Build package as unprivileged user
+        run: |
+          set -euo pipefail
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+
+          runuser -u builder -- \
+            bash -c 'cd "$1" && makepkg --noconfirm --cleanbuild --nocheck' \
+            _ "$GITHUB_WORKSPACE/arch/wezterm"
+
+      - name: Inspect resulting Arch package
+        run: |
+          set -euo pipefail
+          cd arch/wezterm
+          shopt -s nullglob
+          packages=(*.pkg.tar.zst)
+          primary=()
+          debug=()
+
+          for file in "${packages[@]}"; do
+            case "$file" in
+              wezterm-debug-*.pkg.tar.zst)
+                debug+=("$file")
+                ;;
+              wezterm-*.pkg.tar.zst)
+                primary+=("$file")
+                ;;
+              *)
+                echo "Unexpected package: $file" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          if (( ${#primary[@]} != 1 || ${#debug[@]} > 1 )); then
+            echo "Expected one WezTerm package and at most one debug package" >&2
+            printf 'Found: %s\n' "${packages[@]}"
+            exit 1
+          fi
+
+          package="${primary[0]}"
+
+          echo '=== MAIN PACKAGE ==='
+          pacman -Qp "$package"
+          metadata="$(bsdtar -xOf "$package" .PKGINFO)"
+          grep -Fxq 'pkgname = wezterm' <<< "$metadata"
+
+          if (( ${#debug[@]} == 1 )); then
+            echo '=== DEBUG PACKAGE ==='
+            pacman -Qp "${debug[0]}"
+            debug_metadata="$(bsdtar -xOf "${debug[0]}" .PKGINFO)"
+            grep -Fxq 'pkgname = wezterm-debug' <<< "$debug_metadata"
+          fi
+
+          echo '=== REQUIRED EXECUTABLES ==='
+          listing="$(mktemp)"
+          trap 'rm -f "$listing"' EXIT
+          bsdtar -tf "$package" > "$listing"
+
+          for entry in \
+            usr/bin/wezterm \
+            usr/bin/wezterm-gui \
+            usr/bin/wezterm-mux-server
+          do
+            if ! grep -Fxq -e "$entry" -e "./$entry" "$listing"; then
+              echo "Missing packaged entry: $entry" >&2
+              exit 1
+            fi
+            echo "PASS: $entry"
+          done
+
+          echo "PASS: WezTerm package built and validated"
