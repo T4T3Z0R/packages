@@ -62,18 +62,59 @@ jobs:
           cd arch/wezterm
           shopt -s nullglob
           packages=(*.pkg.tar.zst)
-          test "${#packages[@]}" -eq 1
+          primary=()
+          debug=()
 
-          pacman -Qp "${packages[0]}"
-          bsdtar -xOf "${packages[0]}" .PKGINFO
+          for file in "${packages[@]}"; do
+            case "$file" in
+              wezterm-debug-*.pkg.tar.zst)
+                debug+=("$file")
+                ;;
+              wezterm-*.pkg.tar.zst)
+                primary+=("$file")
+                ;;
+              *)
+                echo "Unexpected package: $file" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          if (( ${#primary[@]} != 1 || ${#debug[@]} > 1 )); then
+            echo "Expected one WezTerm package and at most one debug package" >&2
+            printf 'Found: %s\n' "${packages[@]}"
+            exit 1
+          fi
+
+          package="${primary[0]}"
+
+          echo '=== MAIN PACKAGE ==='
+          pacman -Qp "$package"
+          metadata="$(bsdtar -xOf "$package" .PKGINFO)"
+          grep -Fxq 'pkgname = wezterm' <<< "$metadata"
+
+          if (( ${#debug[@]} == 1 )); then
+            echo '=== DEBUG PACKAGE ==='
+            pacman -Qp "${debug[0]}"
+            debug_metadata="$(bsdtar -xOf "${debug[0]}" .PKGINFO)"
+            grep -Fxq 'pkgname = wezterm-debug' <<< "$debug_metadata"
+          fi
+
+          echo '=== REQUIRED EXECUTABLES ==='
+          listing="$(mktemp)"
+          trap 'rm -f "$listing"' EXIT
+          bsdtar -tf "$package" > "$listing"
 
           for entry in \
             usr/bin/wezterm \
             usr/bin/wezterm-gui \
             usr/bin/wezterm-mux-server
           do
-            bsdtar -tf "${packages[0]}" |
-              grep -Fxq "$entry"
+            if ! grep -Fxq -e "$entry" -e "./$entry" "$listing"; then
+              echo "Missing packaged entry: $entry" >&2
+              exit 1
+            fi
+            echo "PASS: $entry"
           done
 
           echo "PASS: WezTerm package built and validated"
