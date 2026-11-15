@@ -451,6 +451,7 @@ jobs:
     concurrency:
       group: arch-repo-publish
       cancel-in-progress: false
+      queue: max
 
     container:
       image: archlinux:latest
