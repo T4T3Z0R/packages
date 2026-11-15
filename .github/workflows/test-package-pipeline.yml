@@ -5,6 +5,7 @@ on:
     branches:
       - feature/shared-package-pipeline
       - feature/shared-noctalia-custom
+      - feature/shared-gameshell
     paths:
       - "scripts/package-pipeline/**"
       - "tests/package-pipeline/**"
@@ -12,6 +13,8 @@ on:
       - ".github/workflows/test-package-pipeline.yml"
       - ".github/workflows/publish-noctalia-greeter.yml"
       - ".github/workflows/publish-noctalia-custom.yml"
+      - ".github/workflows/publish-gameshell.yml"
+      - ".github/workflows/check-noctalia-greeter.yml"
   pull_request:
     paths:
       - "scripts/package-pipeline/**"
@@ -20,6 +23,8 @@ on:
       - ".github/workflows/test-package-pipeline.yml"
       - ".github/workflows/publish-noctalia-greeter.yml"
       - ".github/workflows/publish-noctalia-custom.yml"
+      - ".github/workflows/publish-gameshell.yml"
+      - ".github/workflows/check-noctalia-greeter.yml"
 
 permissions:
   contents: read
