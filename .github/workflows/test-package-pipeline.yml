@@ -62,5 +62,6 @@ jobs:
       - name: Run retention and archival safety tests
         run: |
           python -m unittest discover -s tests/package-pipeline -p "test_retention.py" -v
+          python -m unittest discover -s tests/package-pipeline -p "test_history_pruning.py" -v
           python -m unittest discover -s tests/package-pipeline -p "test_history_publication.py" -v
           python -m unittest discover -s tests/package-pipeline -p "test_publication_archive_gate.py" -v
