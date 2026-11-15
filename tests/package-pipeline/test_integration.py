@@ -164,6 +164,35 @@ class RepositoryIntegrationTests(unittest.TestCase):
             "broot-1.0-1-any.pkg.tar.zst",
         })
 
+        archive = self.root / "archive-output"
+        old_name = "yazi-1.0-1-any.pkg.tar.zst"
+        old_package = archive / old_name
+        old_signature = archive / (old_name + ".sig")
+
+        self.assertTrue(old_package.is_file())
+        self.assertTrue(old_signature.is_file())
+
+        self.assertEqual(
+            old_package.read_bytes(),
+            (self.fixture / old_name).read_bytes(),
+        )
+        self.assertEqual(
+            old_signature.read_bytes(),
+            (self.fixture / (old_name + ".sig")).read_bytes(),
+        )
+
+        self.run_command([
+            "gpg", "--verify", str(old_signature), str(old_package)
+        ], check=True)
+
+        self.assertFalse((output / old_name).exists())
+        self.assertFalse((output / (old_name + ".sig")).exists())
+
+        self.assertEqual(
+            {file.name for file in archive.iterdir()},
+            {old_name, old_name + ".sig"},
+        )
+
         for name in ("test-repo.db", "test-repo.files"):
             file = output / name
             self.assertTrue(file.is_file(), name)

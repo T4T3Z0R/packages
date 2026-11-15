@@ -87,6 +87,11 @@ fi
 
 # Validate the complete remote inventory before deleting anything.
 declare -A remote_assets=()
+declare -A desired_assets=()
+
+for asset in "${desired[@]}"; do
+  desired_assets["$asset"]=1
+done
 
 if (( ${#existing[@]} == 0 )); then
   echo "Remote release inventory is empty" >&2
@@ -116,7 +121,7 @@ done
 
 # Refuse unexpected metadata or unrelated files.
 for asset in "${existing[@]}"; do
-  if printf "%s\n" "${desired[@]}" | grep -Fxq -- "$asset"; then
+  if [[ -n "${desired_assets[$asset]+present}" ]]; then
     continue
   fi
 
@@ -130,9 +135,7 @@ for asset in "${existing[@]}"; do
 done
 
 for asset in "${existing[@]}"; do
-  if ! printf '%s\n' "${desired[@]}" \
-    | grep -Fxq -- "$asset"
-  then
+  if [[ -z "${desired_assets[$asset]+present}" ]]; then
     gh release delete-asset \
       "$RELEASE_TAG" \
       "$asset" \

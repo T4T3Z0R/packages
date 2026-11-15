@@ -147,7 +147,9 @@ for existing_pkg in "${existing_packages[@]}"; do
   )"
 
   if [[ "$existing_name" == "$PACKAGE_NAME" ]]; then
-    rm -f "$existing_pkg" "${existing_pkg}.sig"
+    mkdir -p archive-output
+    cp -- "$existing_pkg" "${existing_pkg}.sig" archive-output/
+    rm -f -- "$existing_pkg" "${existing_pkg}.sig"
   fi
 done
 
