@@ -62,6 +62,28 @@ for existing_pkg in "${existing_packages[@]}"; do
   gpg --verify "$existing_sig" "$existing_pkg"
 done
 
+# Reject ambiguous repository state before removing any package.
+declare -A package_owners=()
+
+for existing_pkg in "${existing_packages[@]}"; do
+  existing_name="$(
+    bsdtar -xOf "$existing_pkg" .PKGINFO |
+      sed -n "s/^pkgname = //p"
+  )"
+
+  if [[ ! "$existing_name" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    echo "Invalid package identity: $existing_pkg" >&2
+    exit 1
+  fi
+
+  if [[ -n "${package_owners[$existing_name]+present}" ]]; then
+    echo "Duplicate package identity: $existing_name" >&2
+    exit 1
+  fi
+
+  package_owners["$existing_name"]="$existing_pkg"
+done
+
 # Remove only versions of the selected package.
 for existing_pkg in "${existing_packages[@]}"; do
   existing_name="$(

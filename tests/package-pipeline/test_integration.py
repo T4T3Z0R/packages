@@ -24,6 +24,7 @@ class RepositoryIntegrationTests(unittest.TestCase):
             "GNUPGHOME": str(self.root / "gnupg"),
             "GITHUB_WORKSPACE": str(self.root),
             "FIXTURE_DIR": str(self.fixture),
+            "TEST_ROOT": str(self.root),
             "PACKAGE_NAME": "yazi",
             "PACKAGE_FILE": "yazi-2.0-1-any.pkg.tar.zst",
             "RELEASE_TAG": "test-release",
@@ -73,6 +74,7 @@ class RepositoryIntegrationTests(unittest.TestCase):
             "  cp \"$FIXTURE_DIR/\"*.pkg.tar.zst* repo-output/",
             "  exit 0",
             "fi",
+            "echo unexpected > \"$TEST_ROOT/gh-mutation\"",
             "exit 99",
             "",
         ]))
@@ -149,6 +151,37 @@ class RepositoryIntegrationTests(unittest.TestCase):
         self.assertIn("yazi-extra-1.0-1/desc", entries)
         self.assertIn("broot-1.0-1/desc", entries)
         self.assertNotIn("yazi-1.0-1/desc", entries)
+
+    def test_duplicate_existing_identity(self):
+        self.make_package("broot", "2.0", self.fixture)
+
+        result = self.assemble()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Duplicate package identity", result.stderr)
+
+        output = self.root / "repo-output"
+        self.assertFalse((output / "test-repo.db").exists())
+        self.assertFalse((self.root / "gh-mutation").exists())
+
+        self.assertTrue(
+            (output / "broot-1.0-1-any.pkg.tar.zst").exists()
+        )
+        self.assertTrue(
+            (output / "broot-2.0-1-any.pkg.tar.zst").exists()
+        )
+
+    def test_failed_assembly_never_publishes(self):
+        signature = self.fixture / "broot-1.0-1-any.pkg.tar.zst.sig"
+        signature.write_bytes(b"invalid signature")
+
+        result = self.assemble()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / "gh-mutation").exists())
+        self.assertFalse(
+            (self.root / "repo-output/test-repo.db").exists()
+        )
 
     def test_corrupted_existing_signature(self):
         signature = self.fixture / "broot-1.0-1-any.pkg.tar.zst.sig"
