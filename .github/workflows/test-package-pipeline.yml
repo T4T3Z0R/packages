@@ -1,0 +1,68 @@
+name: Test shared package pipeline
+
+on:
+  push:
+    branches:
+      - feature/shared-package-pipeline
+    paths:
+      - "scripts/package-pipeline/**"
+      - "tests/package-pipeline/**"
+      - "arch/packages/**"
+      - ".github/workflows/test-package-pipeline.yml"
+      - ".github/workflows/publish-noctalia-greeter.yml"
+  pull_request:
+    paths:
+      - "scripts/package-pipeline/**"
+      - "tests/package-pipeline/**"
+      - "arch/packages/**"
+      - ".github/workflows/test-package-pipeline.yml"
+      - ".github/workflows/publish-noctalia-greeter.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate package pipeline
+    runs-on: ubuntu-latest
+
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Install test dependencies
+        run: pacman -Syu --noconfirm --needed python bash git gnupg libarchive zstd diffutils
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify package tooling
+        run: |
+          set -eu
+          for tool in bash python git gpg bsdtar zstd repo-add repo-remove makepkg diff; do
+            command -v "$tool" >/dev/null
+            echo "PASS: $tool"
+          done
+
+      - name: Verify shell syntax
+        run: bash -n scripts/package-pipeline/assemble-repository.sh scripts/package-pipeline/publish-repository.sh
+
+      - name: Validate manifest
+        run: python scripts/package-pipeline/validate_manifest.py
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests/package-pipeline -p "test_assembly.py" -v && python -m unittest discover -s tests/package-pipeline -p "test_manifest.py" -v && python -m unittest discover -s tests/package-pipeline -p "test_workflow_parity.py" -v
+
+      - name: Run real-package integration tests
+        run: python -m unittest discover -s tests/package-pipeline -p "test_integration.py" -v
+
+      - name: Run publication safety tests
+        run: python -m unittest discover -s tests/package-pipeline -p "test_publication.py" -v
+
+      - name: Run retention and archival safety tests
+        run: |
+          python -m unittest discover -s tests/package-pipeline -p "test_retention.py" -v
+          python -m unittest discover -s tests/package-pipeline -p "test_history_publication.py" -v
+          python -m unittest discover -s tests/package-pipeline -p "test_publication_archive_gate.py" -v
