@@ -9,6 +9,10 @@ set -euo pipefail
 : "${ARCH_REPO_SIGNING_PASSPHRASE:?Signing passphrase is required}"
 : "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}"
 
+# A failed assembly must never leave old staging or success state.
+rm -f archive-state.txt
+rm -rf -- archive-output
+
 if [[ ! "$SIGNING_SUBKEY" =~ ^[[:xdigit:]]{40}$ ]]; then
   echo "SIGNING_SUBKEY must be a full 40-character fingerprint" >&2
   exit 1
@@ -90,6 +94,7 @@ fi
 
 verify_signed_file "${candidate}.sig" "$candidate"
 
+
 mkdir -p repo-output
 
 # The rolling repository must already exist. A GitHub/API error
@@ -139,6 +144,9 @@ for existing_pkg in "${existing_packages[@]}"; do
   package_owners["$existing_name"]="$existing_pkg"
 done
 
+# Track the displaced package independently of archive staging.
+displaced_name=""
+
 # Remove only versions of the selected package.
 for existing_pkg in "${existing_packages[@]}"; do
   existing_name="$(
@@ -147,6 +155,7 @@ for existing_pkg in "${existing_packages[@]}"; do
   )"
 
   if [[ "$existing_name" == "$PACKAGE_NAME" ]]; then
+    displaced_name="${existing_pkg##*/}"
     mkdir -p archive-output
     cp -- "$existing_pkg" "${existing_pkg}.sig" archive-output/
     rm -f -- "$existing_pkg" "${existing_pkg}.sig"
@@ -220,3 +229,6 @@ fi
 
 sha256sum "${checksum_files[@]}" \
   > SHA256SUMS
+
+# Written only after successful repository assembly.
+printf "%s\n" "$PACKAGE_NAME" "$PACKAGE_FILE" "$displaced_name" > ../archive-state.txt

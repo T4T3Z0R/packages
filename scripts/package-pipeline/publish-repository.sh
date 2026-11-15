@@ -5,6 +5,7 @@ set -euo pipefail
 : "${PACKAGE_FILE:?PACKAGE_FILE is required}"
 : "${GH_TOKEN:?GH_TOKEN is required}"
 : "${GH_REPO:?GH_REPO is required}"
+: "${PACKAGE_NAME:?PACKAGE_NAME is required}"
 
 if [[ ! "$PACKAGE_FILE" =~ ^[a-zA-Z0-9._+-]+[.]pkg[.]tar[.]zst$ ]]; then
   echo "Invalid PACKAGE_FILE: $PACKAGE_FILE" >&2
@@ -40,6 +41,72 @@ if ! diff -u \
   <(sed -n "s/^[[:xdigit:]]\{64\}  //p" repo-output/SHA256SUMS | LC_ALL=C sort)
 then
   echo "Checksum manifest does not match assembled assets" >&2
+  exit 1
+fi
+
+# Validate assembly displacement state before GitHub access.
+if [[ ! -f archive-state.txt ]]; then
+  echo "Missing assembly state" >&2
+  exit 1
+fi
+
+mapfile -t assembly_state < archive-state.txt
+
+if (( ${#assembly_state[@]} != 3 )); then
+  echo "Invalid assembly state" >&2
+  exit 1
+fi
+
+if [[ "${assembly_state[0]}" != "$PACKAGE_NAME" ||
+      "${assembly_state[1]}" != "$PACKAGE_FILE" ]]; then
+  echo "Assembly identity mismatch" >&2
+  exit 1
+fi
+
+displaced="${assembly_state[2]}"
+
+if [[ -n "$displaced" ]]; then
+  if [[ ! "$displaced" =~ ^[a-zA-Z0-9._+-]+[.]pkg[.]tar[.]zst$ ||
+        "$displaced" == "$PACKAGE_FILE" ]]; then
+    echo "Invalid displaced package filename" >&2
+    exit 1
+  fi
+
+  if [[ ! -f "archive-output/$displaced" ||
+        ! -f "archive-output/$displaced.sig" ]]; then
+    echo "Missing displaced package or signature" >&2
+    exit 1
+  fi
+
+  shopt -s nullglob
+  staged_files=( archive-output/* )
+  if (( ${#staged_files[@]} != 2 )); then
+    echo "Unexpected archive staging contents" >&2
+    exit 1
+  fi
+else
+  if [[ -d archive-output ]] &&
+     [[ -n "$(find archive-output -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+    echo "Unexpected archive staging without displacement" >&2
+    exit 1
+  fi
+fi
+
+# Verified archival must precede live repository access.
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+if ! archive_result="$(
+  python3 "$script_dir/publication-archive-gate.py" \
+    --package "$PACKAGE_NAME" \
+    --candidate "$PACKAGE_FILE"
+)"; then
+  echo "Archive authorization failed" >&2
+  exit 1
+fi
+
+if ! printf "%s\\n" "$archive_result" | python3 -c   'import json,sys; sys.exit(0 if json.load(sys.stdin).get("gate_passed") is True else 1)'
+then
+  echo "Archive gate did not confirm authorization" >&2
   exit 1
 fi
 

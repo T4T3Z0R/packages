@@ -152,6 +152,55 @@ class RepositoryIntegrationTests(unittest.TestCase):
     def assemble(self):
         return self.run_command(["bash", str(ASSEMBLER)])
 
+    def test_history_release_failure_blocks_live_publication(self):
+        self.env["PACKAGE_NAME"] = "gameshell"
+        self.env["PACKAGE_FILE"] = (
+            "gameshell-2.0-1-any.pkg.tar.zst"
+        )
+        self.env["REPO_NAME"] = "t4t3z0r"
+        self.env["GH_TOKEN"] = "offline-test-token"
+        self.env["GH_REPO"] = "fixture/offline"
+
+        self.make_package("gameshell", "1.0", self.fixture)
+        self.make_package(
+            "gameshell", "2.0", self.root / "package-output"
+        )
+
+        assembled = self.assemble()
+        self.assertEqual(
+            assembled.returncode, 0,
+            assembled.stdout + assembled.stderr
+        )
+
+        stub = self.root / "bin/gh"
+        original = stub.read_text()
+        anchor = "if [[ \"$1 $2\" == \"release view\" ]]; then exit 0; fi"
+        replacement = "\n".join([
+            "if [[ \"$1 $2\" == \"release view\" && \"${3:-}\" == \"arch-history-gameshell\" ]]; then",
+            "  echo attempted > \"$TEST_ROOT/history-attempt\"",
+            "  exit 17",
+            "fi",
+            anchor,
+        ])
+        assert original.count(anchor) == 1
+        stub.write_text(original.replace(anchor, replacement, 1))
+
+        publisher = (
+            ROOT / "scripts/package-pipeline/publish-repository.sh"
+        )
+        published = self.run_command(["bash", str(publisher)])
+
+        self.assertNotEqual(published.returncode, 0)
+        self.assertIn(
+            "Archive authorization failed", published.stderr
+        )
+        self.assertTrue(
+            (self.root / "history-attempt").exists()
+        )
+        self.assertFalse(
+            (self.root / "gh-mutation").exists()
+        )
+
     def test_successful_replacement(self):
         result = self.assemble()
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
@@ -164,6 +213,16 @@ class RepositoryIntegrationTests(unittest.TestCase):
             "yazi-extra-1.0-1-any.pkg.tar.zst",
             "broot-1.0-1-any.pkg.tar.zst",
         })
+
+        state = (
+            self.root / "archive-state.txt"
+        ).read_text().splitlines()
+
+        self.assertEqual(state, [
+            "yazi",
+            "yazi-2.0-1-any.pkg.tar.zst",
+            "yazi-1.0-1-any.pkg.tar.zst",
+        ])
 
         archive = self.root / "archive-output"
         old_name = "yazi-1.0-1-any.pkg.tar.zst"
@@ -354,6 +413,28 @@ class RepositoryIntegrationTests(unittest.TestCase):
 
         result = self.assemble()
         self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(
+            (self.root / "repo-output/test-repo.db").exists()
+        )
+
+    def test_failed_assembly_clears_stale_archive_state(self):
+        state = self.root / "archive-state.txt"
+        state.write_text("stale-success" + chr(10))
+
+        archive = self.root / "archive-output"
+        archive.mkdir()
+        (archive / "stale-package").write_bytes(b"stale")
+
+        signature = self.root / (
+            "package-output/yazi-2.0-1-any.pkg.tar.zst.sig"
+        )
+        signature.write_bytes(b"invalid signature")
+
+        result = self.assemble()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(state.exists())
+        self.assertFalse(archive.exists())
         self.assertFalse(
             (self.root / "repo-output/test-repo.db").exists()
         )

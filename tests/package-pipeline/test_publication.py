@@ -2,6 +2,7 @@
 import hashlib
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -64,6 +65,9 @@ class PublicationTests(unittest.TestCase):
             digest = hashlib.sha256((output / name).read_bytes()).hexdigest()
             checksum_lines.append(f"{digest}  {name}")
         (output / "SHA256SUMS").write_text(chr(10).join(checksum_lines) + chr(10))
+        (self.root / "archive-state.txt").write_text(
+            "yazi" + chr(10) + PACKAGE + chr(10) + chr(10)
+        )
         bin_dir = self.root / "bin"
         bin_dir.mkdir()
         stub = bin_dir / "gh"
@@ -75,6 +79,7 @@ class PublicationTests(unittest.TestCase):
             "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
             "RELEASE_TAG": "fixture-release",
             "PACKAGE_FILE": PACKAGE,
+            "PACKAGE_NAME": "yazi",
             "GH_TOKEN": "offline-test-token",
             "GH_REPO": "fixture/offline",
             "TEST_GH_LOG": str(self.log),
@@ -92,6 +97,126 @@ class PublicationTests(unittest.TestCase):
 
     def operations(self):
         return self.log.read_text().splitlines() if self.log.exists() else []
+
+    def test_missing_assembly_state_blocks_github(self):
+        (self.root / "archive-state.txt").unlink()
+
+        result = self.execute()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Missing assembly state", result.stderr)
+        self.assertEqual(self.operations(), [])
+
+    def test_assembly_identity_mismatch_blocks_github(self):
+        state = self.root / "archive-state.txt"
+        state.write_text(
+            "gameshell" + chr(10) + PACKAGE + chr(10) + chr(10)
+        )
+
+        result = self.execute()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Assembly identity mismatch", result.stderr)
+        self.assertEqual(self.operations(), [])
+
+    def test_missing_displaced_pair_blocks_github(self):
+        old = "yazi-1.0-1-any.pkg.tar.zst"
+        state = self.root / "archive-state.txt"
+        state.write_text(
+            "yazi" + chr(10) + PACKAGE + chr(10)
+            + old + chr(10)
+        )
+
+        result = self.execute()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Missing displaced package", result.stderr)
+        self.assertEqual(self.operations(), [])
+
+    def test_extra_staged_asset_blocks_github(self):
+        old = "yazi-1.0-1-any.pkg.tar.zst"
+        archive = self.root / "archive-output"
+        archive.mkdir()
+        (archive / old).write_bytes(b"old package")
+        (archive / (old + ".sig")).write_bytes(b"old signature")
+        (archive / "unexpected.txt").write_bytes(b"extra")
+
+        state = self.root / "archive-state.txt"
+        state.write_text(
+            "yazi" + chr(10) + PACKAGE + chr(10)
+            + old + chr(10)
+        )
+
+        result = self.execute()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unexpected archive staging", result.stderr)
+        self.assertEqual(self.operations(), [])
+
+    def test_staging_without_displacement_blocks_github(self):
+        archive = self.root / "archive-output"
+        archive.mkdir()
+        (archive / "stale-package").write_bytes(b"stale")
+
+        result = self.execute()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unexpected archive staging", result.stderr)
+        self.assertEqual(self.operations(), [])
+
+    def install_gate_shim(self, mode):
+        shim = self.root / "bin" / "python3"
+        shim.write_text('#!/usr/bin/env bash\nif [[ "$1" == */publication-archive-gate.py ]]; then\n  case "$TEST_GATE_MODE" in\n    fail) exit 17 ;;\n    deny) echo "{\\"gate_passed\\":false}"; exit 0 ;;\n    invalid) echo not-json; exit 0 ;;\n  esac\nfi\nexec "$TEST_REAL_PYTHON" "$@"\n')
+        shim.chmod(0o755)
+        self.env["TEST_GATE_MODE"] = mode
+        self.env["TEST_REAL_PYTHON"] = sys.executable
+
+    def test_invalid_displaced_package_blocks_live_github(self):
+        old = "yazi-1.0-1-any.pkg.tar.zst"
+        archive = self.root / "archive-output"
+        archive.mkdir()
+
+        (archive / old).write_bytes(b"not a valid Arch package")
+        (archive / (old + ".sig")).write_bytes(
+            b"not a valid signature"
+        )
+
+        (self.root / "archive-state.txt").write_text(
+            chr(10).join(("yazi", PACKAGE, old)) + chr(10)
+        )
+        self.env["SIGNING_SUBKEY"] = "A" * 40
+
+        result = self.execute()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Archive authorization failed", result.stderr)
+        self.assertEqual(self.operations(), [])
+
+    def test_archive_gate_failure_blocks_live_github(self):
+        self.install_gate_shim("fail")
+
+        result = self.execute()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Archive authorization failed", result.stderr)
+        self.assertEqual(self.operations(), [])
+
+    def test_archive_gate_denial_blocks_live_github(self):
+        self.install_gate_shim("deny")
+
+        result = self.execute()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("did not confirm authorization", result.stderr)
+        self.assertEqual(self.operations(), [])
+
+    def test_invalid_archive_gate_response_blocks_live_github(self):
+        self.install_gate_shim("invalid")
+
+        result = self.execute()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.operations(), [])
 
     def test_corrupted_asset_stops_before_github(self):
         asset = self.root / "repo-output/t4t3z0r.db"
