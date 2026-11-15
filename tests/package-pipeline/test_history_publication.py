@@ -37,6 +37,8 @@ class HistoryPublicationTests(unittest.TestCase):
         self.fail_view = False
         self.fail_upload = False
         self.corrupt_download = False
+        self.wrong_signer = False
+        self.inject_unexpected_asset = False
 
     def fake_run(self, *args):
         if args[0] == sys.executable:
@@ -48,7 +50,16 @@ class HistoryPublicationTests(unittest.TestCase):
                 "verified": True,
             })
 
+        if args[0] == "gpg":
+            signer = "B" * 40 if self.wrong_signer else "A" * 40
+            return "[GNUPG:] VALIDSIG " + signer + " 0 0 0 0 0 0 0 0\\n"
+
         self.assertEqual(args[:2], ("gh", "release"))
+        self.assertIn("--repo", args)
+        self.assertEqual(
+            args[args.index("--repo") + 1],
+            "example/disposable",
+        )
         operation = args[2]
         self.operations.append(operation)
 
@@ -62,6 +73,8 @@ class HistoryPublicationTests(unittest.TestCase):
                 raise subprocess.CalledProcessError(1, args)
             asset = Path(args[4])
             self.remote[asset.name] = asset.read_bytes()
+            if self.inject_unexpected_asset:
+                self.remote["unexpected.json"] = b"surprise"
             return ""
 
         if operation == "download":
@@ -146,6 +159,70 @@ class HistoryPublicationTests(unittest.TestCase):
         self.corrupt_download = True
         with self.assertRaisesRegex(ValueError, "Archive verification failed"):
             self.execute()
+
+    def test_unauthorized_downloaded_signer_rejected(self):
+        self.wrong_signer = True
+
+        with self.assertRaisesRegex(
+            ValueError, "Archived signature has unauthorized signer"
+        ):
+            self.execute()
+
+        self.assertEqual(set(self.remote), {FILE, SIGNATURE})
+
+    def test_orphaned_older_package_blocks_upload(self):
+        old = PACKAGE + "-1.6.0-1-x86_64.pkg.tar.zst"
+        self.remote[old] = b"older-package"
+
+        with self.assertRaisesRegex(
+            ValueError, "Incomplete historical package pair"
+        ):
+            self.execute()
+
+        self.assertNotIn("upload", self.operations)
+
+    def test_orphaned_older_signature_blocks_upload(self):
+        old = PACKAGE + "-1.6.0-1-x86_64.pkg.tar.zst"
+        self.remote[old + ".sig"] = b"older-signature"
+
+        with self.assertRaisesRegex(
+            ValueError, "Incomplete historical package pair"
+        ):
+            self.execute()
+
+        self.assertNotIn("upload", self.operations)
+
+    def test_unexpected_history_metadata_blocks_upload(self):
+        self.remote["unexpected.json"] = b"metadata"
+
+        with self.assertRaisesRegex(
+            ValueError, "Unexpected history release asset"
+        ):
+            self.execute()
+
+        self.assertNotIn("upload", self.operations)
+
+    def test_complete_older_pair_is_allowed(self):
+        old = PACKAGE + "-1.6.0-1-x86_64.pkg.tar.zst"
+        self.remote[old] = b"older-package"
+        self.remote[old + ".sig"] = b"older-signature"
+
+        result = self.execute()
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(self.operations.count("upload"), 2)
+        self.assertIn(old, self.remote)
+        self.assertIn(old + ".sig", self.remote)
+
+    def test_unexpected_asset_after_upload_rejected(self):
+        self.inject_unexpected_asset = True
+
+        with self.assertRaisesRegex(
+            ValueError, "Unexpected history release asset"
+        ):
+            self.execute()
+
+        self.assertEqual(self.operations.count("upload"), 2)
 
     def test_dry_run_never_contacts_github(self):
         result = self.execute(publish=False)
