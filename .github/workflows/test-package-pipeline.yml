@@ -9,12 +9,14 @@ on:
       - "tests/package-pipeline/**"
       - "arch/packages/**"
       - ".github/workflows/test-package-pipeline.yml"
+      - ".github/workflows/publish-noctalia-greeter.yml"
   pull_request:
     paths:
       - "scripts/package-pipeline/**"
       - "tests/package-pipeline/**"
       - "arch/packages/**"
       - ".github/workflows/test-package-pipeline.yml"
+      - ".github/workflows/publish-noctalia-greeter.yml"
 
 permissions:
   contents: read
