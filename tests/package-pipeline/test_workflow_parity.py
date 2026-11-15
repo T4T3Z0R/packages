@@ -2,34 +2,34 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOWS = (
-    "publish-gameshell.yml",
-)
-
 class WorkflowParityTests(unittest.TestCase):
-    def test_existing_publishers(self):
-        for filename in WORKFLOWS:
-            with self.subTest(workflow=filename):
-                path = ROOT / ".github/workflows" / filename
-                source = path.read_text()
+    def test_gameshell_shared_pipeline(self):
+        source = (
+            ROOT / ".github/workflows/publish-gameshell.yml"
+        ).read_text()
 
-                required = (
-                    "name: Assemble signed repository",
-                    "name: Publish rolling Arch repository",
-                    "name: Sign approved package",
-                    "name: Download exact validated candidate",
-                    "name: Verify validated candidate",
-                    "name: Send Pushover approval notification",
-                    "arch-repo-publish",
-                    "ARCH_REPO_SIGNING_PASSPHRASE",
-                    "repo-add",
-                    "gpg --verify",
-                    "gh release upload",
-                    "gh release delete-asset",
-                )
+        required = (
+            "name: Resolve upstream candidate",
+            "name: Validate unsigned candidate",
+            "name: Download exact validated candidate",
+            "name: Verify validated candidate",
+            "name: Sign approved package",
+            "name: Send Pushover approval notification",
+            "name: arch-repo-publish",
+            "PACKAGE_NAME: gameshell",
+            "scripts/package-pipeline/assemble-repository.sh",
+            "scripts/package-pipeline/publish-repository.sh",
+            'github.event_name != \'pull_request\'',
+            'timezone: "America/New_York"',
+            "cron: '37 9 * * *'",
+        )
 
-                for marker in required:
-                    self.assertIn(marker, source)
+        for marker in required:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, source)
+
+        self.assertNotIn("gh release upload", source)
+        self.assertNotIn("gh release delete-asset", source)
 
     def test_custom_shared_pipeline(self):
         source = (

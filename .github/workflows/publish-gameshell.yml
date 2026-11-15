@@ -6,12 +6,6 @@ on:
     paths:
       - 'arch/gameshell/**'
       - '.github/workflows/publish-gameshell.yml'
-  push:
-    branches:
-      - main
-    paths:
-      - 'arch/gameshell/**'
-      - '.github/workflows/publish-gameshell.yml'
   workflow_dispatch:
     inputs:
       source_ref:
@@ -20,13 +14,15 @@ on:
         default: latest
         type: string
   schedule:
-    - cron: '23 10 * * *'
+    - cron: '37 9 * * *'
+      timezone: "America/New_York"
 
 permissions:
   contents: read
 
 env:
   UPSTREAM_REPOSITORY: phyver/GameShell
+  PACKAGE_NAME: gameshell
   REPO_NAME: t4t3z0r
   RELEASE_TAG: arch-repo
   SIGNING_SUBKEY: A2A5AEC28C6D94EF2FB3EC75AC3E97B561D89610
@@ -468,7 +464,7 @@ jobs:
         run: |
           set -euo pipefail
           pacman -Syu --noconfirm --needed \
-            git github-cli gnupg
+            git github-cli gnupg python libarchive
 
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
@@ -533,102 +529,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           ARCH_REPO_SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_SIGNING_PASSPHRASE }}
-        run: |
-          set -euo pipefail
-          mkdir -p repo-output
-          gh release view "$RELEASE_TAG" >/dev/null
-          gh release download "$RELEASE_TAG" \
-            --pattern '*.pkg.tar.zst' \
-            --pattern '*.pkg.tar.zst.sig' \
-            --dir repo-output
-
-          shopt -s nullglob
-          existing_packages=(repo-output/*.pkg.tar.zst)
-          for existing_pkg in "${existing_packages[@]}"; do
-            existing_sig="${existing_pkg}.sig"
-            test -f "$existing_sig" || {
-              echo "Existing package lacks signature: $existing_pkg" >&2
-              exit 1
-            }
-            gpg --verify "$existing_sig" "$existing_pkg"
-          done
-
-          rm -f \
-            repo-output/gameshell-*.pkg.tar.zst \
-            repo-output/gameshell-*.pkg.tar.zst.sig
-          cp "package-output/${PACKAGE_FILE}" repo-output/
-          cp "package-output/${PACKAGE_FILE}.sig" repo-output/
-
-          cd repo-output
-          packages=(*.pkg.tar.zst)
-          (( ${#packages[@]} > 0 ))
-          repo-add --include-sigs \
-            "${REPO_NAME}.db.tar.zst" "${packages[@]}"
-
-          rm -f "${REPO_NAME}.db" "${REPO_NAME}.files"
-          cp -L "${REPO_NAME}.db.tar.zst" "${REPO_NAME}.db"
-          cp -L "${REPO_NAME}.files.tar.zst" "${REPO_NAME}.files"
-          rm -f \
-            "${REPO_NAME}.db.tar.zst" \
-            "${REPO_NAME}.files.tar.zst"
-
-          sign_file() {
-            local file="$1"
-            printf '%s' "$ARCH_REPO_SIGNING_PASSPHRASE" \
-              | gpg --batch --yes --pinentry-mode loopback \
-                  --passphrase-fd 0 \
-                  --local-user "${SIGNING_SUBKEY}!" \
-                  --output "${file}.sig" \
-                  --detach-sign "$file"
-            gpg --verify "${file}.sig" "$file"
-          }
-          sign_file "${REPO_NAME}.db"
-          sign_file "${REPO_NAME}.files"
-
-          cp "$GITHUB_WORKSPACE/arch/keys/t4t3z0r-package-signing.asc" .
-          mapfile -d '' checksum_files < <(
-            find . -maxdepth 1 -type f ! -name SHA256SUMS \
-              -printf '%f\0' | sort -z
-          )
-          sha256sum "${checksum_files[@]}" > SHA256SUMS
+        run: bash scripts/package-pipeline/assemble-repository.sh
 
       - name: Publish rolling Arch repository
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          gh release upload "$RELEASE_TAG" \
-            "repo-output/${PACKAGE_FILE}" \
-            "repo-output/${PACKAGE_FILE}.sig" \
-            --clobber
-
-          gh release upload "$RELEASE_TAG" \
-            repo-output/t4t3z0r-package-signing.asc \
-            repo-output/SHA256SUMS \
-            repo-output/t4t3z0r.files \
-            repo-output/t4t3z0r.files.sig \
-            --clobber
-
-          # Database last, so clients see either the old complete state or
-          # the new complete state rather than a half-published repository.
-          gh release upload "$RELEASE_TAG" \
-            repo-output/t4t3z0r.db \
-            repo-output/t4t3z0r.db.sig \
-            --clobber
-
-          mapfile -t desired < <(
-            find repo-output -maxdepth 1 -type f -printf '%f\n' | sort
-          )
-          mapfile -t existing < <(
-            gh release view "$RELEASE_TAG" \
-              --json assets --jq '.assets[].name'
-          )
-          for asset in "${existing[@]}"; do
-            if ! printf '%s\n' "${desired[@]}" | grep -Fxq -- "$asset"; then
-              gh release delete-asset "$RELEASE_TAG" "$asset" --yes
-            fi
-          done
+        run: bash scripts/package-pipeline/publish-repository.sh
 
       - name: Publication summary
         env:
