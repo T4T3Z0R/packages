@@ -98,6 +98,104 @@ class PublicationTests(unittest.TestCase):
     def operations(self):
         return self.log.read_text().splitlines() if self.log.exists() else []
 
+    def setup_batch_publication(self):
+        extra = "wezterm-debug-2.0-1-any.pkg.tar.zst"
+        output = self.root / "repo-output"
+
+        for name, filename in (
+            ("yazi", PACKAGE),
+            ("wezterm-debug", extra),
+        ):
+            build = self.root / "build" / name
+            build.mkdir(parents=True)
+            (build / ".PKGINFO").write_text(
+                f"pkgname = {name}\n"
+            )
+            subprocess.run(
+                ["bsdtar", "-c", "--zstd", "-f",
+                 str(output / filename), ".PKGINFO"],
+                cwd=build, check=True, capture_output=True,
+            )
+
+        (output / (extra + ".sig")).write_bytes(b"test-signature")
+
+        lines = [
+            f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.name}"
+            for f in sorted(output.iterdir())
+            if f.name != "SHA256SUMS"
+        ]
+        (output / "SHA256SUMS").write_text(
+            "\n".join(lines) + "\n"
+        )
+
+        (self.root / "archive-state.txt").write_text(
+            "\n".join((
+                "batch-v2",
+                "yazi", PACKAGE, "",
+                "wezterm-debug", extra, "",
+            )) + "\n"
+        )
+
+        self.env["ADDITIONAL_PACKAGE_FILES"] = extra
+        self.env["TEST_EXPECTED_ASSETS"] = ",".join(
+            ASSETS + (extra, extra + ".sig")
+        )
+        return extra
+
+    def test_batch_upload_order(self):
+        extra = self.setup_batch_publication()
+        result = self.execute()
+
+        self.assertEqual(
+            result.returncode, 0, result.stderr + result.stdout
+        )
+
+        ops = self.operations()
+        self.assertEqual(ops[0], "lookup")
+        self.assertEqual(
+            ops[1],
+            "upload:" + ",".join((
+                PACKAGE, PACKAGE + ".sig",
+                extra, extra + ".sig",
+            )),
+        )
+        self.assertTrue(ops[2].startswith("upload:"))
+        self.assertEqual(
+            ops[3], "upload:t4t3z0r.db,t4t3z0r.db.sig"
+        )
+
+    def test_batch_missing_debug_signature(self):
+        extra = self.setup_batch_publication()
+        (self.root / "repo-output" / (extra + ".sig")).unlink()
+
+        result = self.execute()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.operations(), [])
+
+    def test_batch_identity_mismatch(self):
+        self.setup_batch_publication()
+        state = self.root / "archive-state.txt"
+        state.write_text(
+            state.read_text().replace(
+                "wezterm-debug\n", "wrong-name\n", 1
+            )
+        )
+
+        result = self.execute()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("metadata mismatch", result.stderr)
+        self.assertEqual(self.operations(), [])
+
+    def test_batch_upload_failure_stops_database(self):
+        self.setup_batch_publication()
+        result = self.execute("upload")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(
+            [op.split(":")[0] for op in self.operations()],
+            ["lookup", "upload"],
+        )
+
     def test_missing_assembly_state_blocks_github(self):
         (self.root / "archive-state.txt").unlink()
 
