@@ -45,7 +45,7 @@ jobs:
           done
 
       - name: Verify shell syntax
-        run: bash -n scripts/package-pipeline/assemble-repository.sh
+        run: bash -n scripts/package-pipeline/assemble-repository.sh scripts/package-pipeline/publish-repository.sh
 
       - name: Validate manifest
         run: python scripts/package-pipeline/validate_manifest.py
@@ -55,3 +55,6 @@ jobs:
 
       - name: Run real-package integration tests
         run: python -m unittest discover -s tests/package-pipeline -p "test_integration.py" -v
+
+      - name: Run publication safety tests
+        run: python -m unittest discover -s tests/package-pipeline -p "test_publication.py" -v
