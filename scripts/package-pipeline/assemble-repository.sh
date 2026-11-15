@@ -16,6 +16,27 @@ fi
 
 SIGNING_SUBKEY="${SIGNING_SUBKEY^^}"
 
+# Verify configured signer against the repository public key.
+public_key="$GITHUB_WORKSPACE/arch/keys/t4t3z0r-package-signing.asc"
+
+if [[ ! -f "$public_key" ]]; then
+  echo "Repository signing public key is missing" >&2
+  exit 1
+fi
+
+if ! key_records="$(gpg --batch --with-colons --show-keys "$public_key")"; then
+  echo "Unable to inspect repository signing public key" >&2
+  exit 1
+fi
+
+if ! printf "%s\\n" "$key_records" |
+    grep "^fpr:" |
+    cut -d: -f10 |
+    grep -Fxiq -- "$SIGNING_SUBKEY"; then
+  echo "Configured signing fingerprint does not match repository public key" >&2
+  exit 1
+fi
+
 verify_signed_file() {
   local signature="$1"
   local payload="$2"

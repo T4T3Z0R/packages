@@ -211,6 +211,27 @@ class RepositoryIntegrationTests(unittest.TestCase):
             (self.root / "repo-output/test-repo.db").exists()
         )
 
+    def test_signing_fingerprint_not_in_public_key(self):
+        self.env["SIGNING_SUBKEY"] = "A" * 40
+
+        result = self.assemble()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not match repository public key", result.stderr)
+        self.assertFalse((self.root / "gh-mutation").exists())
+
+    def test_missing_repository_public_key(self):
+        keyfile = (
+            self.root / "arch/keys/t4t3z0r-package-signing.asc"
+        )
+        keyfile.unlink()
+
+        result = self.assemble()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("public key is missing", result.stderr)
+        self.assertFalse((self.root / "gh-mutation").exists())
+
     def test_unauthorized_candidate_signer(self):
         package = self.root / "package-output" / self.env["PACKAGE_FILE"]
         self.make_unauthorized_signature(package)
