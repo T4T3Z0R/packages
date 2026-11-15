@@ -85,6 +85,50 @@ if [[ -n "$existing_output" ]]; then
   mapfile -t existing <<< "$existing_output"
 fi
 
+# Validate the complete remote inventory before deleting anything.
+declare -A remote_assets=()
+
+if (( ${#existing[@]} == 0 )); then
+  echo "Remote release inventory is empty" >&2
+  exit 1
+fi
+
+for asset in "${existing[@]}"; do
+  if [[ -z "$asset" || "$asset" == */* || "$asset" == "." || "$asset" == ".." ]]; then
+    echo "Invalid release asset name: $asset" >&2
+    exit 1
+  fi
+
+  if [[ -n "${remote_assets[$asset]+present}" ]]; then
+    echo "Duplicate remote asset: $asset" >&2
+    exit 1
+  fi
+
+  remote_assets["$asset"]=1
+done
+
+for asset in "${desired[@]}"; do
+  if [[ -z "${remote_assets[$asset]+present}" ]]; then
+    echo "Expected release asset missing: $asset" >&2
+    exit 1
+  fi
+done
+
+# Refuse unexpected metadata or unrelated files.
+for asset in "${existing[@]}"; do
+  if printf "%s\n" "${desired[@]}" | grep -Fxq -- "$asset"; then
+    continue
+  fi
+
+  case "$asset" in
+    *.pkg.tar.zst|*.pkg.tar.zst.sig) ;;
+    *)
+      echo "Unexpected non-package release asset: $asset" >&2
+      exit 1
+      ;;
+  esac
+done
+
 for asset in "${existing[@]}"; do
   if ! printf '%s\n' "${desired[@]}" \
     | grep -Fxq -- "$asset"

@@ -35,7 +35,14 @@ if fail and (operation == fail or operation.startswith(fail)):
     sys.exit(17)
 if operation == "inventory":
     print("obsolete.pkg.tar.zst")
-    print("yazi-2.0-1-any.pkg.tar.zst")
+    omit = os.environ.get("TEST_OMIT_ASSET", "")
+    for asset in os.environ["TEST_EXPECTED_ASSETS"].split(","):
+        if asset != omit:
+            print(asset)
+    if os.environ.get("TEST_DUPLICATE_ASSET"):
+        print(os.environ["TEST_DUPLICATE_ASSET"])
+    if os.environ.get("TEST_EXTRA_ASSET"):
+        print(os.environ["TEST_EXTRA_ASSET"])
 if operation == "unexpected":
     sys.exit(98)
 """
@@ -71,6 +78,7 @@ class PublicationTests(unittest.TestCase):
             "GH_TOKEN": "offline-test-token",
             "GH_REPO": "fixture/offline",
             "TEST_GH_LOG": str(self.log),
+            "TEST_EXPECTED_ASSETS": ",".join(ASSETS),
         })
 
     def execute(self, fail=None):
@@ -136,6 +144,27 @@ class PublicationTests(unittest.TestCase):
     def test_inventory_failure_prevents_cleanup(self):
         self.assertNotEqual(self.execute("inventory").returncode, 0)
         self.assertEqual(self.operations()[-1], "inventory")
+        self.assertFalse(any(op.startswith("delete:") for op in self.operations()))
+
+    def test_incomplete_inventory_prevents_cleanup(self):
+        self.env["TEST_OMIT_ASSET"] = "t4t3z0r.db"
+        result = self.execute()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Expected release asset missing", result.stderr)
+        self.assertFalse(any(op.startswith("delete:") for op in self.operations()))
+
+    def test_duplicate_inventory_prevents_cleanup(self):
+        self.env["TEST_DUPLICATE_ASSET"] = PACKAGE
+        result = self.execute()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Duplicate remote asset", result.stderr)
+        self.assertFalse(any(op.startswith("delete:") for op in self.operations()))
+
+    def test_unknown_metadata_prevents_cleanup(self):
+        self.env["TEST_EXTRA_ASSET"] = "unexpected-metadata.json"
+        result = self.execute()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unexpected non-package release asset", result.stderr)
         self.assertFalse(any(op.startswith("delete:") for op in self.operations()))
 
     def test_successful_upload_order_and_cleanup(self):

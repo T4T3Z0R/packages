@@ -45,9 +45,9 @@ class RepositoryIntegrationTests(unittest.TestCase):
         ], check=True).stdout
 
         self.key = next(
-            line.split(":")[4]
+            line.split(":")[9]
             for line in keys.splitlines()
-            if line.startswith("sec:")
+            if line.startswith("fpr:")
         )
         self.env["SIGNING_SUBKEY"] = self.key
 
@@ -120,6 +120,34 @@ class RepositoryIntegrationTests(unittest.TestCase):
 
         return package
 
+    def make_unauthorized_signature(self, package):
+        identity = "Unauthorized Test <unauthorized@example.invalid>"
+
+        self.run_command([
+            "gpg", "--batch", "--pinentry-mode", "loopback",
+            "--passphrase", "", "--quick-generate-key",
+            identity, "ed25519", "sign", "0",
+        ], check=True)
+
+        keys = self.run_command([
+            "gpg", "--with-colons", "--list-secret-keys", identity
+        ], check=True).stdout
+
+        wrong_key = next(
+            line.split(":")[9]
+            for line in keys.splitlines()
+            if line.startswith("fpr:")
+        )
+
+        self.assertNotEqual(wrong_key, self.key)
+
+        self.run_command([
+            "gpg", "--batch", "--yes",
+            "--local-user", wrong_key + "!",
+            "--output", str(package) + ".sig",
+            "--detach-sign", str(package),
+        ], check=True)
+
     def assemble(self):
         return self.run_command(["bash", str(ASSEMBLER)])
 
@@ -182,6 +210,28 @@ class RepositoryIntegrationTests(unittest.TestCase):
         self.assertFalse(
             (self.root / "repo-output/test-repo.db").exists()
         )
+
+    def test_unauthorized_candidate_signer(self):
+        package = self.root / "package-output" / self.env["PACKAGE_FILE"]
+        self.make_unauthorized_signature(package)
+
+        result = self.assemble()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unauthorized signing fingerprint", result.stderr)
+        self.assertFalse((self.root / "gh-mutation").exists())
+        self.assertFalse((self.root / "repo-output/test-repo.db").exists())
+
+    def test_unauthorized_existing_signer(self):
+        package = self.fixture / "broot-1.0-1-any.pkg.tar.zst"
+        self.make_unauthorized_signature(package)
+
+        result = self.assemble()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unauthorized signing fingerprint", result.stderr)
+        self.assertFalse((self.root / "gh-mutation").exists())
+        self.assertFalse((self.root / "repo-output/test-repo.db").exists())
 
     def test_corrupted_existing_signature(self):
         signature = self.fixture / "broot-1.0-1-any.pkg.tar.zst.sig"

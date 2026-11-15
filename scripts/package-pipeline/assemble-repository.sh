@@ -9,6 +9,40 @@ set -euo pipefail
 : "${ARCH_REPO_SIGNING_PASSPHRASE:?Signing passphrase is required}"
 : "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}"
 
+if [[ ! "$SIGNING_SUBKEY" =~ ^[[:xdigit:]]{40}$ ]]; then
+  echo "SIGNING_SUBKEY must be a full 40-character fingerprint" >&2
+  exit 1
+fi
+
+SIGNING_SUBKEY="${SIGNING_SUBKEY^^}"
+
+verify_signed_file() {
+  local signature="$1"
+  local payload="$2"
+  local status prefix marker signer remainder
+  local matches=0
+
+  if ! status="$(gpg --batch --status-fd 1 --verify "$signature" "$payload" 2>/dev/null)"; then
+    echo "GPG verification failed: $payload" >&2
+    return 1
+  fi
+
+  while read -r prefix marker signer remainder; do
+    if [[ "$prefix" == "[GNUPG:]" && "$marker" == "VALIDSIG" ]]; then
+      matches=$((matches + 1))
+      if [[ "${signer^^}" != "$SIGNING_SUBKEY" ]]; then
+        echo "Unauthorized signing fingerprint: $payload" >&2
+        return 1
+      fi
+    fi
+  done <<< "$status"
+
+  if (( matches != 1 )); then
+    echo "Expected exactly one valid signature: $payload" >&2
+    return 1
+  fi
+}
+
 if [[ ! "$PACKAGE_NAME" =~ ^[a-z][a-z0-9-]*$ ]]; then
   echo "Invalid PACKAGE_NAME: $PACKAGE_NAME" >&2
   exit 1
@@ -33,7 +67,7 @@ if [[ "$candidate_name" != "$PACKAGE_NAME" ]]; then
   exit 1
 fi
 
-gpg --verify "${candidate}.sig" "$candidate"
+verify_signed_file "${candidate}.sig" "$candidate"
 
 mkdir -p repo-output
 
@@ -59,7 +93,7 @@ for existing_pkg in "${existing_packages[@]}"; do
     exit 1
   fi
 
-  gpg --verify "$existing_sig" "$existing_pkg"
+  verify_signed_file "$existing_sig" "$existing_pkg"
 done
 
 # Reject ambiguous repository state before removing any package.
@@ -137,7 +171,7 @@ sign_file() {
         --detach-sign \
         "$file"
 
-  gpg --verify "${file}.sig" "$file"
+  verify_signed_file "${file}.sig" "$file"
 }
 
 sign_file "${REPO_NAME}.db"
