@@ -1,0 +1,78 @@
+name: Test WezTerm package
+
+on:
+  pull_request:
+    paths:
+      - 'arch/wezterm/**'
+      - '.github/workflows/test-wezterm.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and validate WezTerm
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    container:
+      image: archlinux:latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Arch build dependencies
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed \
+            base-devel cargo cmake git pkgconf python \
+            bash fontconfig libgcc glib2 glibc \
+            hicolor-icon-theme libgit2 libssh2 \
+            libx11 libxcb libxkbcommon libxkbcommon-x11 \
+            openssl ttf-jetbrains-mono ttf-roboto \
+            wayland xcb-util xcb-util-image zlib zstd
+
+      - name: Checkout package repository
+        uses: actions/checkout@v6
+
+      - name: Verify recipe
+        run: |
+          set -euo pipefail
+          bash -n arch/wezterm/PKGBUILD
+          grep -Fx \
+            '_commit=e1eae81a56be8b5487dc77a29616afa568fb57b7' \
+            arch/wezterm/PKGBUILD
+
+      - name: Build and test as unprivileged user
+        run: |
+          set -euo pipefail
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          runuser -u builder -- \
+            bash -c 'cd "$1" && makepkg --noconfirm --cleanbuild' \
+            _ "$GITHUB_WORKSPACE/arch/wezterm"
+
+      - name: Inspect resulting Arch package
+        run: |
+          set -euo pipefail
+          cd arch/wezterm
+          shopt -s nullglob
+          packages=(*.pkg.tar.zst)
+          test "${#packages[@]}" -eq 1
+
+          pacman -Qp "${packages[0]}"
+          bsdtar -xOf "${packages[0]}" .PKGINFO
+
+          for entry in \
+            usr/bin/wezterm \
+            usr/bin/wezterm-gui \
+            usr/bin/wezterm-mux-server
+          do
+            bsdtar -tf "${packages[0]}" |
+              grep -Fxq "$entry"
+          done
+
+          echo "PASS: WezTerm package built and validated"
