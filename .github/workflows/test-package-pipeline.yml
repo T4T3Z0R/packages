@@ -4,12 +4,14 @@ on:
   push:
     branches:
       - feature/shared-package-pipeline
+      - feature/shared-noctalia-custom
     paths:
       - "scripts/package-pipeline/**"
       - "tests/package-pipeline/**"
       - "arch/packages/**"
       - ".github/workflows/test-package-pipeline.yml"
       - ".github/workflows/publish-noctalia-greeter.yml"
+      - ".github/workflows/publish-noctalia-custom.yml"
   pull_request:
     paths:
       - "scripts/package-pipeline/**"
@@ -17,6 +19,7 @@ on:
       - "arch/packages/**"
       - ".github/workflows/test-package-pipeline.yml"
       - ".github/workflows/publish-noctalia-greeter.yml"
+      - ".github/workflows/publish-noctalia-custom.yml"
 
 permissions:
   contents: read

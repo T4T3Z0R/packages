@@ -3,7 +3,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = (
-    "publish-noctalia-custom.yml",
     "publish-gameshell.yml",
 )
 
@@ -31,6 +30,30 @@ class WorkflowParityTests(unittest.TestCase):
 
                 for marker in required:
                     self.assertIn(marker, source)
+
+    def test_custom_shared_pipeline(self):
+        source = (
+            ROOT / ".github/workflows/publish-noctalia-custom.yml"
+        ).read_text()
+
+        required = (
+            "name: Download exact validated candidate",
+            "name: Verify validated candidate",
+            "name: Sign approved package",
+            "name: Send Pushover approval notification",
+            "name: arch-repo-publish",
+            "ARCH_REPO_SIGNING_PASSPHRASE",
+            "PACKAGE_NAME: noctalia-custom",
+            "scripts/package-pipeline/assemble-repository.sh",
+            "scripts/package-pipeline/publish-repository.sh",
+        )
+
+        for marker in required:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, source)
+
+        self.assertNotIn("gh release upload", source)
+        self.assertNotIn("gh release delete-asset", source)
 
     def test_greeter_shared_pipeline(self):
         source = (
