@@ -14,6 +14,7 @@ on:
       - ".github/workflows/publish-noctalia-greeter.yml"
       - ".github/workflows/publish-noctalia-custom.yml"
       - ".github/workflows/publish-gameshell.yml"
+      - ".github/workflows/publish-wezterm.yml"
       - ".github/workflows/check-noctalia-greeter.yml"
   pull_request:
     paths:
@@ -24,6 +25,7 @@ on:
       - ".github/workflows/publish-noctalia-greeter.yml"
       - ".github/workflows/publish-noctalia-custom.yml"
       - ".github/workflows/publish-gameshell.yml"
+      - ".github/workflows/publish-wezterm.yml"
       - ".github/workflows/check-noctalia-greeter.yml"
 
 permissions:

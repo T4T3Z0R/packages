@@ -3,6 +3,26 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 class WorkflowParityTests(unittest.TestCase):
+    def test_publishing_dependencies(self):
+        names = (
+            "publish-gameshell.yml",
+            "publish-noctalia-custom.yml",
+            "publish-noctalia-greeter.yml",
+            "publish-wezterm.yml",
+        )
+
+        for name in names:
+            with self.subTest(workflow=name):
+                source = (
+                    ROOT / ".github/workflows" / name
+                ).read_text()
+
+                block = source.split(
+                    "      - name: Install publishing dependencies", 1
+                )[1].split("\n      - name:", 1)[0]
+
+                self.assertIn("diffutils", block)
+
     def test_gameshell_shared_pipeline(self):
         source = (
             ROOT / ".github/workflows/publish-gameshell.yml"
