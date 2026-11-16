@@ -196,6 +196,104 @@ class PublicationTests(unittest.TestCase):
             ["lookup", "upload"],
         )
 
+    def test_batch_second_archive_failure_blocks_live_release(self):
+        extra = self.setup_batch_publication()
+
+        old_main = "yazi-1.0-1-any.pkg.tar.zst"
+        old_debug = "wezterm-debug-1.0-1-any.pkg.tar.zst"
+
+        archive = self.root / "archive-output"
+        archive.mkdir()
+
+        for old in (old_main, old_debug):
+            (archive / old).write_bytes(b"fixture-package")
+            (archive / (old + ".sig")).write_bytes(b"fixture-signature")
+
+        (self.root / "archive-state.txt").write_text(
+            "\n".join((
+                "batch-v2",
+                "yazi", PACKAGE, old_main,
+                "wezterm-debug", extra, old_debug,
+            )) + "\n"
+        )
+
+        # First archive gate succeeds; second fails.
+        shim = self.root / "bin" / "python3"
+        shim.write_text(
+            '#!/usr/bin/env bash\n'
+            'if [[ "${1:-}" == */publication-archive-gate.py ]]; then\n'
+            '  printf "%s\\n" "$*" >> "$TEST_GATE_LOG"\n'
+            '  case " $* " in\n'
+            '    *" --package wezterm-debug "*) exit 17 ;;\n'
+            '  esac\n'
+            '  printf "%s\\n" \'{"gate_passed":true}\'\n'
+            '  exit 0\n'
+            'fi\n'
+            'exec "$TEST_REAL_PYTHON" "$@"\n'
+        )
+        shim.chmod(0o755)
+
+        log = self.root / "archive-gates.log"
+        self.env["TEST_GATE_LOG"] = str(log)
+        self.env["TEST_REAL_PYTHON"] = sys.executable
+
+        result = self.execute()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Archive authorization failed: wezterm-debug",
+            result.stderr,
+        )
+        self.assertEqual(self.operations(), [])
+
+        calls = log.read_text().splitlines()
+        self.assertEqual(len(calls), 2)
+        self.assertIn("--package yazi", calls[0])
+        self.assertIn("--package wezterm-debug", calls[1])
+
+    def test_batch_retry_after_failed_upload(self):
+        self.setup_batch_publication()
+
+        first = self.execute("upload")
+        self.assertNotEqual(first.returncode, 0)
+
+        self.assertEqual(
+            [op.split(":")[0] for op in self.operations()],
+            ["lookup", "upload"],
+        )
+
+        second = self.execute()
+        self.assertEqual(
+            second.returncode, 0,
+            second.stderr + second.stdout,
+        )
+
+        ops = self.operations()
+        retry_ops = ops[2:]
+
+        self.assertEqual(retry_ops[0], "lookup")
+        self.assertEqual(
+            [op.split(":")[0] for op in retry_ops[1:4]],
+            ["upload", "upload", "upload"],
+        )
+        self.assertEqual(retry_ops[4], "inventory")
+
+    def test_batch_unexpected_archive_blocks_publication(self):
+        self.setup_batch_publication()
+
+        archive = self.root / "archive-output"
+        archive.mkdir()
+        (archive / "unexpected").write_bytes(b"unrelated-file")
+
+        result = self.execute()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Unexpected batch archive staging",
+            result.stderr,
+        )
+        self.assertEqual(self.operations(), [])
+
     def test_missing_assembly_state_blocks_github(self):
         (self.root / "archive-state.txt").unlink()
 

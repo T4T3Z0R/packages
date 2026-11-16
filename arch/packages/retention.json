@@ -9,6 +9,7 @@
     "moonlight-qt": 2,
     "ghostty": 2,
     "wezterm": 2,
-    "gameshell": 2
+    "gameshell": 2,
+    "wezterm-debug": 2
   }
 }
