@@ -480,7 +480,7 @@ jobs:
             github-cli \
             gnupg \
             python \
-            libarchive
+            libarchive diffutils
 
       - name: Checkout package infrastructure
         uses: actions/checkout@v6

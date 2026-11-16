@@ -175,7 +175,7 @@ jobs:
         run: |
           set -euo pipefail
           pacman -Syu --noconfirm --needed \
-            git github-cli gnupg python libarchive zstd
+            git github-cli gnupg python libarchive diffutils zstd
 
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
