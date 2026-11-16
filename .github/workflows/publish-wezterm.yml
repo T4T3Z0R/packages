@@ -1,0 +1,273 @@
+name: Publish WezTerm
+
+on:
+  pull_request:
+    paths:
+      - 'arch/wezterm/**'
+      - '.github/workflows/publish-wezterm.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PACKAGE_NAME: wezterm
+  REPO_NAME: t4t3z0r
+  RELEASE_TAG: arch-repo
+  SIGNING_SUBKEY: A2A5AEC28C6D94EF2FB3EC75AC3E97B561D89610
+
+jobs:
+  validate:
+    name: Build and validate unsigned WezTerm pair
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    container:
+      image: archlinux:latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Arch build dependencies
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed \
+            base-devel cargo cmake git pkgconf python \
+            bash fontconfig libgcc glib2 glibc \
+            hicolor-icon-theme libgit2 libssh2 \
+            libx11 libxcb libxkbcommon libxkbcommon-x11 \
+            openssl ttf-jetbrains-mono ttf-roboto \
+            wayland xcb-util xcb-util-image zlib zstd
+
+      - name: Checkout package infrastructure
+        uses: actions/checkout@v6
+
+      - name: Verify pinned recipe
+        run: |
+          set -euo pipefail
+          bash -n arch/wezterm/PKGBUILD
+          grep -Fxq \
+            '_commit=e1eae81a56be8b5487dc77a29616afa568fb57b7' \
+            arch/wezterm/PKGBUILD
+          grep -Fxq \
+            'pkgver=20240203.110809.5046fc22.r965.ge1eae81a5' \
+            arch/wezterm/PKGBUILD
+          grep -Fxq 'pkgrel=1' arch/wezterm/PKGBUILD
+
+      - name: Build both packages as unprivileged user
+        run: |
+          set -euo pipefail
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          runuser -u builder -- \
+            bash -c 'cd "$1" && makepkg --noconfirm --cleanbuild --nocheck' \
+            _ "$GITHUB_WORKSPACE/arch/wezterm"
+
+      - name: Inspect both packages and record checksums
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          packages=(arch/wezterm/*.pkg.tar.zst)
+          main=()
+          debug=()
+          for package in "${packages[@]}"; do
+            case "${package##*/}" in
+              wezterm-debug-*.pkg.tar.zst) debug+=("$package") ;;
+              wezterm-*.pkg.tar.zst) main+=("$package") ;;
+              *) echo "Unexpected package: $package" >&2; exit 1 ;;
+            esac
+          done
+          if (( ${#packages[@]} != 2 || ${#main[@]} != 1 || ${#debug[@]} != 1 )); then
+            echo 'Expected exactly one wezterm and one wezterm-debug package' >&2
+            exit 1
+          fi
+
+          main_file="${main[0]##*/}"
+          debug_file="${debug[0]##*/}"
+          [[ "$main_file" == 'wezterm-20240203.110809.5046fc22.r965.ge1eae81a5-1-x86_64.pkg.tar.zst' ]]
+          [[ "$debug_file" == 'wezterm-debug-20240203.110809.5046fc22.r965.ge1eae81a5-1-x86_64.pkg.tar.zst' ]]
+          bsdtar -xOf "${main[0]}" .PKGINFO | grep -Fxq 'pkgname = wezterm'
+          bsdtar -xOf "${debug[0]}" .PKGINFO | grep -Fxq 'pkgname = wezterm-debug'
+
+          listing="$(mktemp)"
+          trap 'rm -f "$listing"' EXIT
+          bsdtar -tf "${main[0]}" | sed 's#^\./##' > "$listing"
+          for binary in \
+            usr/bin/wezterm \
+            usr/bin/wezterm-gui \
+            usr/bin/wezterm-mux-server
+          do
+            grep -Fxq "$binary" "$listing" || {
+              echo "Missing executable: $binary" >&2
+              exit 1
+            }
+          done
+
+          mkdir -p candidate evidence
+          cp -- "${main[0]}" "${debug[0]}" candidate/
+          printf '%s\n' "$main_file" "$debug_file" > evidence/package-names.txt
+          (cd candidate && sha256sum "$main_file" "$debug_file" > ../evidence/package-SHA256SUMS)
+          (cd candidate && sha256sum --check --strict ../evidence/package-SHA256SUMS)
+          {
+            echo '## Unsigned WezTerm candidate'
+            echo
+            echo "- Main package: \`$main_file\`"
+            echo "- Debug package: \`$debug_file\`"
+            echo '- Both identities and required executables: **validated**'
+            echo '- Signed: **NO**'
+            echo '- Published: **NO**'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload unsigned candidate and evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: wezterm-${{ github.run_id }}-${{ github.run_attempt }}-candidate
+          path: |
+            candidate/
+            evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+  approval-ready:
+    name: Notify signing approval ready
+    needs: validate
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Pushover approval notification
+        env:
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$PUSHOVER_APP_TOKEN"
+          test -n "$PUSHOVER_USER_KEY"
+          curl --fail --silent --show-error \
+            --form-string "token=$PUSHOVER_APP_TOKEN" \
+            --form-string "user=$PUSHOVER_USER_KEY" \
+            --form-string 'title=Package approval required' \
+            --form-string 'message=WezTerm and wezterm-debug validated; review before signing and publication.' \
+            --form-string "url=https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --form-string 'url_title=Review deployment' \
+            https://api.pushover.net/1/messages.json
+
+  publish:
+    name: Sign and publish approved WezTerm pair
+    needs: [validate, approval-ready]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment:
+      name: arch-repo-publish
+    permissions:
+      contents: write
+    concurrency:
+      group: arch-repo-publish
+      cancel-in-progress: false
+      queue: max
+    container:
+      image: archlinux:latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install publishing dependencies
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed \
+            git github-cli gnupg python libarchive zstd
+
+      - name: Checkout package infrastructure
+        uses: actions/checkout@v6
+
+      - name: Trust checked-out repository
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Download exact validated candidate
+        uses: actions/download-artifact@v8
+        with:
+          name: wezterm-${{ github.run_id }}-${{ github.run_attempt }}-candidate
+          path: validated
+
+      - name: Verify validated candidate
+        run: |
+          set -euo pipefail
+          test -s validated/evidence/package-names.txt
+          test -s validated/evidence/package-SHA256SUMS
+          mapfile -t files < validated/evidence/package-names.txt
+          (( ${#files[@]} == 2 ))
+          [[ "${files[0]}" == 'wezterm-20240203.110809.5046fc22.r965.ge1eae81a5-1-x86_64.pkg.tar.zst' ]]
+          [[ "${files[1]}" == 'wezterm-debug-20240203.110809.5046fc22.r965.ge1eae81a5-1-x86_64.pkg.tar.zst' ]]
+          (cd validated/candidate && sha256sum --check --strict ../evidence/package-SHA256SUMS)
+          bsdtar -xOf "validated/candidate/${files[0]}" .PKGINFO | grep -Fxq 'pkgname = wezterm'
+          bsdtar -xOf "validated/candidate/${files[1]}" .PKGINFO | grep -Fxq 'pkgname = wezterm-debug'
+          mkdir -p package-output
+          cp -- "validated/candidate/${files[0]}" "validated/candidate/${files[1]}" package-output/
+          {
+            echo "PACKAGE_FILE=${files[0]}"
+            echo "ADDITIONAL_PACKAGE_FILES=${files[1]}"
+          } >> "$GITHUB_ENV"
+
+      - name: Refuse existing version collisions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          remote_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+          for package in "$PACKAGE_FILE" "$ADDITIONAL_PACKAGE_FILES"; do
+            if grep -Fxq "$package" <<< "$remote_assets"; then
+              echo "Package version already exists in rolling release: $package" >&2
+              exit 1
+            fi
+          done
+
+      - name: Import repository signing subkey
+        env:
+          ARCH_REPO_SIGNING_KEY: ${{ secrets.ARCH_REPO_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$ARCH_REPO_SIGNING_KEY"
+          printf '%s\n' "$ARCH_REPO_SIGNING_KEY" | gpg --batch --import
+          gpg --batch --list-secret-keys "$SIGNING_SUBKEY"
+
+      - name: Sign both approved packages
+        env:
+          ARCH_REPO_SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_SIGNING_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          for name in "$PACKAGE_FILE" "$ADDITIONAL_PACKAGE_FILES"; do
+            package="package-output/$name"
+            printf '%s' "$ARCH_REPO_SIGNING_PASSPHRASE" |
+              gpg --batch --yes --pinentry-mode loopback \
+                --passphrase-fd 0 \
+                --local-user "${SIGNING_SUBKEY}!" \
+                --output "${package}.sig" \
+                --detach-sign "$package"
+            gpg --verify "${package}.sig" "$package"
+          done
+
+      - name: Assemble signed repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ARCH_REPO_SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_SIGNING_PASSPHRASE }}
+        run: bash scripts/package-pipeline/assemble-repository.sh
+
+      - name: Publish rolling Arch repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/package-pipeline/publish-repository.sh
+
+      - name: Publication summary
+        run: |
+          {
+            echo '## Published WezTerm package pair'
+            echo
+            echo "- Main package: \`$PACKAGE_FILE\`"
+            echo "- Debug package: \`$ADDITIONAL_PACKAGE_FILES\`"
+            echo "- Repository: \`$REPO_NAME\`"
+            echo '- Human signing approval: **PASSED**'
+            echo '- Packages and repository databases signed'
+          } >> "$GITHUB_STEP_SUMMARY"
