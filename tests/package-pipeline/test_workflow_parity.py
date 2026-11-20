@@ -9,6 +9,7 @@ class WorkflowParityTests(unittest.TestCase):
             "publish-noctalia-custom.yml",
             "publish-noctalia-greeter.yml",
             "publish-wezterm.yml",
+            "publish-ghostty.yml",
         )
 
         for name in names:
@@ -22,6 +23,33 @@ class WorkflowParityTests(unittest.TestCase):
                 )[1].split("\n      - name:", 1)[0]
 
                 self.assertIn("diffutils", block)
+
+    def test_ghostty_shared_pipeline(self):
+        source = (
+            ROOT / ".github/workflows/publish-ghostty.yml"
+        ).read_text()
+
+        required = (
+            "PACKAGE_NAME: ghostty",
+            "name: Verify pinned recipe and compiler",
+            "name: Build split packages as unprivileged user",
+            "ghostty-shell-integration",
+            "ghostty-terminfo",
+            "ghostty-nautilus",
+            "name: Download exact validated candidate",
+            "name: Verify validated candidate",
+            "name: Sign approved packages",
+            "name: Send Pushover approval notification",
+            "name: arch-repo-publish",
+            "ADDITIONAL_PACKAGE_FILES",
+            "scripts/package-pipeline/assemble-repository.sh",
+            "scripts/package-pipeline/publish-repository.sh",
+        )
+        for marker in required:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, source)
+        self.assertNotIn("gh release upload", source)
+        self.assertNotIn("gh release delete-asset", source)
 
     def test_gameshell_shared_pipeline(self):
         source = (
