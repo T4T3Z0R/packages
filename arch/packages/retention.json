@@ -10,6 +10,10 @@
     "ghostty": 2,
     "wezterm": 2,
     "gameshell": 2,
-    "wezterm-debug": 2
+    "wezterm-debug": 2,
+    "ghostty-shell-integration": 2,
+    "ghostty-terminfo": 2,
+    "ghostty-nautilus": 2,
+    "ghostty-debug": 2
   }
 }

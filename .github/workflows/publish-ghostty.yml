@@ -1,0 +1,292 @@
+name: Publish Ghostty
+
+on:
+  pull_request:
+    paths:
+      - 'arch/ghostty/**'
+      - 'arch/packages/retention.json'
+      - '.github/workflows/publish-ghostty.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PACKAGE_NAME: ghostty
+  REPO_NAME: t4t3z0r
+  RELEASE_TAG: arch-repo
+  SIGNING_SUBKEY: A2A5AEC28C6D94EF2FB3EC75AC3E97B561D89610
+
+jobs:
+  validate:
+    name: Build and validate unsigned Ghostty split packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    container:
+      image: archlinux:latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Arch build dependencies
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed \
+            base-devel git libarchive zig blueprint-compiler pandoc-cli \
+            bzip2 fontconfig freetype2 glibc glib2 gtk4 gtk4-layer-shell \
+            libx11 harfbuzz libadwaita libpng oniguruma pixman wayland zlib
+
+      - name: Checkout package infrastructure
+        uses: actions/checkout@v6
+
+      - name: Verify pinned recipe and compiler
+        run: |
+          set -euo pipefail
+          bash -n arch/ghostty/PKGBUILD
+          grep -Fxq 'pkgbase=ghostty' arch/ghostty/PKGBUILD
+          grep -Fxq \
+            'pkgname=(ghostty ghostty-shell-integration ghostty-terminfo ghostty-nautilus)' \
+            arch/ghostty/PKGBUILD
+          grep -Fxq 'pkgver=1.4.0' arch/ghostty/PKGBUILD
+          grep -Fxq 'pkgrel=1' arch/ghostty/PKGBUILD
+          grep -Fxq \
+            "sha256sums=('2e2a2516f9bea89a4991ad7c9401b77682eed366387a5b1d7c629472b5d11a43')" \
+            arch/ghostty/PKGBUILD
+          case "$(zig version)" in
+            0.17.*) ;;
+            *) echo "Ghostty 1.4.0 requires Zig 0.17.x" >&2; exit 1 ;;
+          esac
+
+      - name: Build split packages as unprivileged user
+        run: |
+          set -euo pipefail
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          runuser -u builder -- \
+            bash -c 'cd "$1" && makepkg --noconfirm --cleanbuild --nocheck' \
+            _ "$GITHUB_WORKSPACE/arch/ghostty"
+
+      - name: Inspect split packages and record checksums
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(arch/ghostty/*.pkg.tar.zst)
+          # makepkg may produce ghostty-debug depending on Arch's makepkg.conf.
+          (( ${#archives[@]} == 4 || ${#archives[@]} == 5 )) || {
+            echo "Expected four split packages and optionally ghostty-debug" >&2
+            exit 1
+          }
+
+          names=(ghostty ghostty-shell-integration ghostty-terminfo ghostty-nautilus)
+          if [[ -f arch/ghostty/ghostty-debug-1.4.0-1-x86_64.pkg.tar.zst ]]; then
+            names+=(ghostty-debug)
+          fi
+          (( ${#names[@]} == ${#archives[@]} ))
+
+          mkdir -p candidate evidence
+          : > evidence/package-names.txt
+          for name in "${names[@]}"; do
+            file="${name}-1.4.0-1-x86_64.pkg.tar.zst"
+            source="arch/ghostty/$file"
+            test -s "$source"
+            bsdtar -xOf "$source" .PKGINFO | grep -Fxq "pkgname = $name"
+            cp -- "$source" candidate/
+            printf '%s\n' "$file" >> evidence/package-names.txt
+          done
+
+          # Reject extra or unrecognized archives even if their count matches.
+          for archive in "${archives[@]}"; do
+            test -f "candidate/${archive##*/}"
+          done
+
+          main=candidate/ghostty-1.4.0-1-x86_64.pkg.tar.zst
+          listing="$(mktemp)"
+          trap 'rm -f "$listing"' EXIT
+          bsdtar -tf "$main" | sed 's#^\./##' > "$listing"
+          grep -Fxq 'usr/bin/ghostty' "$listing"
+          grep -Fxq 'usr/share/applications/com.mitchellh.ghostty.desktop' "$listing"
+          integration=candidate/ghostty-shell-integration-1.4.0-1-x86_64.pkg.tar.zst
+          bsdtar -tf "$integration" > "$listing"
+          grep -q 'shell-integration/' "$listing"
+          terminfo=candidate/ghostty-terminfo-1.4.0-1-x86_64.pkg.tar.zst
+          bsdtar -tf "$terminfo" > "$listing"
+          grep -q 'usr/share/terminfo/' "$listing"
+
+          (cd candidate && sha256sum *.pkg.tar.zst > ../evidence/package-SHA256SUMS)
+          (cd candidate && sha256sum --check --strict ../evidence/package-SHA256SUMS)
+          {
+            echo '## Unsigned Ghostty split-package candidate'
+            echo
+            echo "- Package count: ${#names[@]}"
+            echo '- Package identities and required installed files: **validated**'
+            echo '- Signed: **NO**'
+            echo '- Published: **NO**'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload unsigned candidate and evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghostty-${{ github.run_id }}-${{ github.run_attempt }}-candidate
+          path: |
+            candidate/
+            evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+  approval-ready:
+    name: Notify signing approval ready
+    needs: validate
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Pushover approval notification
+        env:
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$PUSHOVER_APP_TOKEN"
+          test -n "$PUSHOVER_USER_KEY"
+          curl --fail --silent --show-error \
+            --form-string "token=$PUSHOVER_APP_TOKEN" \
+            --form-string "user=$PUSHOVER_USER_KEY" \
+            --form-string 'title=Package approval required' \
+            --form-string 'message=Ghostty split packages validated; review before signing and publication.' \
+            --form-string "url=https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --form-string 'url_title=Review deployment' \
+            https://api.pushover.net/1/messages.json
+
+  publish:
+    name: Sign and publish approved Ghostty split packages
+    needs: [validate, approval-ready]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment:
+      name: arch-repo-publish
+    permissions:
+      contents: write
+    concurrency:
+      group: arch-repo-publish
+      cancel-in-progress: false
+      queue: max
+    container:
+      image: archlinux:latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install publishing dependencies
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed \
+            git github-cli gnupg python libarchive diffutils zstd
+
+      - name: Checkout package infrastructure
+        uses: actions/checkout@v6
+
+      - name: Trust checked-out repository
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Download exact validated candidate
+        uses: actions/download-artifact@v8
+        with:
+          name: ghostty-${{ github.run_id }}-${{ github.run_attempt }}-candidate
+          path: validated
+
+      - name: Verify validated candidate
+        run: |
+          set -euo pipefail
+          test -s validated/evidence/package-names.txt
+          test -s validated/evidence/package-SHA256SUMS
+          mapfile -t files < validated/evidence/package-names.txt
+          (( ${#files[@]} == 4 || ${#files[@]} == 5 ))
+          expected=(ghostty ghostty-shell-integration ghostty-terminfo ghostty-nautilus)
+          if (( ${#files[@]} == 5 )); then expected+=(ghostty-debug); fi
+          for i in "${!files[@]}"; do
+            [[ "${files[i]}" == "${expected[i]}-1.4.0-1-x86_64.pkg.tar.zst" ]]
+          done
+          (cd validated/candidate && sha256sum --check --strict ../evidence/package-SHA256SUMS)
+          mapfile -t actual < <(find validated/candidate -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
+          mapfile -t expected_files < <(printf '%s\n' "${files[@]}" | LC_ALL=C sort)
+          [[ "${actual[*]}" == "${expected_files[*]}" ]]
+          for i in "${!files[@]}"; do
+            bsdtar -xOf "validated/candidate/${files[i]}" .PKGINFO |
+              grep -Fxq "pkgname = ${expected[i]}"
+          done
+          mkdir -p package-output
+          for file in "${files[@]}"; do
+            cp -- "validated/candidate/$file" package-output/
+          done
+          additional="$(printf '%s ' "${files[@]:1}")"
+          {
+            echo "PACKAGE_FILE=${files[0]}"
+            echo "ADDITIONAL_PACKAGE_FILES=${additional% }"
+          } >> "$GITHUB_ENV"
+
+      - name: Refuse existing version collisions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          remote_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+          read -r -a extras <<< "$ADDITIONAL_PACKAGE_FILES"
+          for package in "$PACKAGE_FILE" "${extras[@]}"; do
+            if grep -Fxq "$package" <<< "$remote_assets"; then
+              echo "Package version already exists in rolling release: $package" >&2
+              exit 1
+            fi
+          done
+
+      - name: Import repository signing subkey
+        env:
+          ARCH_REPO_SIGNING_KEY: ${{ secrets.ARCH_REPO_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$ARCH_REPO_SIGNING_KEY"
+          printf '%s\n' "$ARCH_REPO_SIGNING_KEY" | gpg --batch --import
+          gpg --batch --list-secret-keys "$SIGNING_SUBKEY"
+
+      - name: Sign approved packages
+        env:
+          ARCH_REPO_SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_SIGNING_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          read -r -a extras <<< "$ADDITIONAL_PACKAGE_FILES"
+          for name in "$PACKAGE_FILE" "${extras[@]}"; do
+            package="package-output/$name"
+            printf '%s' "$ARCH_REPO_SIGNING_PASSPHRASE" |
+              gpg --batch --yes --pinentry-mode loopback \
+                --passphrase-fd 0 \
+                --local-user "${SIGNING_SUBKEY}!" \
+                --output "${package}.sig" \
+                --detach-sign "$package"
+            gpg --verify "${package}.sig" "$package"
+          done
+
+      - name: Assemble signed repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ARCH_REPO_SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_SIGNING_PASSPHRASE }}
+        run: bash scripts/package-pipeline/assemble-repository.sh
+
+      - name: Publish rolling Arch repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/package-pipeline/publish-repository.sh
+
+      - name: Publication summary
+        run: |
+          {
+            echo '## Published Ghostty split packages'
+            echo
+            echo "- Main package: \`$PACKAGE_FILE\`"
+            echo "- Additional packages: \`$ADDITIONAL_PACKAGE_FILES\`"
+            echo "- Repository: \`$REPO_NAME\`"
+            echo '- Human signing approval: **PASSED**'
+            echo '- Packages and repository databases signed'
+          } >> "$GITHUB_STEP_SUMMARY"
