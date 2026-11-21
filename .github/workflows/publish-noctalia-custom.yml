@@ -330,15 +330,8 @@ jobs:
             > evidence/namcap-package.txt \
             2>&1 || true
 
-          if grep -Eq ' E: ' \
-            evidence/namcap-PKGBUILD.txt \
-            evidence/namcap-package.txt
-          then
-            echo "Namcap reported package errors" >&2
-            cat evidence/namcap-PKGBUILD.txt >&2
-            cat evidence/namcap-package.txt >&2
-            exit 1
-          fi
+          python scripts/package-pipeline/validate_noctalia_namcap.py \
+            evidence/namcap-PKGBUILD.txt evidence/namcap-package.txt
 
           package_sha256="$(
             sha256sum "$pkg" \
@@ -360,6 +353,7 @@ jobs:
           set -euo pipefail
 
           su builduser -c "
+            set -e
             cd '$GITHUB_WORKSPACE/source/noctalia'
             just build
             just test debug --print-errorlogs
@@ -401,6 +395,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload unsigned candidate and evidence
+        if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: noctalia-custom-${{ github.run_id }}-candidate
