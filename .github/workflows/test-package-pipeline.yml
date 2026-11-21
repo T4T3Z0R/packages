@@ -67,7 +67,7 @@ jobs:
         run: python scripts/package-pipeline/validate_manifest.py
 
       - name: Run unit tests
-        run: python -m unittest discover -s tests/package-pipeline -p "test_assembly.py" -v && python -m unittest discover -s tests/package-pipeline -p "test_manifest.py" -v && python -m unittest discover -s tests/package-pipeline -p "test_workflow_parity.py" -v
+        run: python -m unittest discover -s tests/package-pipeline -p "test_assembly.py" -v && python -m unittest discover -s tests/package-pipeline -p "test_manifest.py" -v && python -m unittest discover -s tests/package-pipeline -p "test_noctalia_namcap.py" -v && python -m unittest discover -s tests/package-pipeline -p "test_workflow_parity.py" -v
 
       - name: Run real-package integration tests
         run: python -m unittest discover -s tests/package-pipeline -p "test_integration.py" -v
