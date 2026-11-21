@@ -11,6 +11,7 @@ class WorkflowParityTests(unittest.TestCase):
             "publish-wezterm.yml",
             "publish-ghostty.yml",
             "publish-keepassxc.yml",
+            "publish-syncthing.yml",
         )
 
         for name in names:
@@ -153,6 +154,37 @@ class WorkflowParityTests(unittest.TestCase):
                 self.assertIn(marker, source)
 
         self.assertNotIn("makepkg --noconfirm --cleanbuild --nocheck", source)
+        self.assertNotIn("gh release upload", source)
+        self.assertNotIn("gh release delete-asset", source)
+
+
+
+    def test_syncthing_shared_pipeline(self):
+        source = (
+            ROOT / ".github/workflows/publish-syncthing.yml"
+        ).read_text()
+
+        required = (
+            "PACKAGE_NAME: syncthing",
+            "syncthing-discosrv",
+            "syncthing-relaysrv",
+            "makepkg --noconfirm --cleanbuild",
+            "name: Download exact validated candidate",
+            "name: Verify validated candidate",
+            "name: Sign approved packages",
+            "name: Send Pushover approval notification",
+            "name: arch-repo-publish",
+            "name: Refuse existing version collisions",
+            "ADDITIONAL_PACKAGE_FILES",
+            "scripts/package-pipeline/assemble-repository.sh",
+            "scripts/package-pipeline/publish-repository.sh",
+        )
+
+        for value in required:
+            with self.subTest(marker=value):
+                self.assertIn(value, source)
+
+        self.assertNotIn("--nocheck", source)
         self.assertNotIn("gh release upload", source)
         self.assertNotIn("gh release delete-asset", source)
 

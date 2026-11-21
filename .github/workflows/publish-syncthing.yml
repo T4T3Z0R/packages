@@ -1,0 +1,302 @@
+name: Publish Syncthing
+
+on:
+  pull_request:
+    paths:
+      - 'arch/syncthing/**'
+      - 'arch/packages/retention.json'
+      - '.github/workflows/publish-syncthing.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PACKAGE_NAME: syncthing
+  REPO_NAME: t4t3z0r
+  RELEASE_TAG: arch-repo
+  SIGNING_SUBKEY: A2A5AEC28C6D94EF2FB3EC75AC3E97B561D89610
+
+jobs:
+  validate:
+    name: Build and validate unsigned Syncthing
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    container:
+      image: archlinux:latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Arch build dependencies
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed \
+            base-devel git go gnupg libarchive glibc sqlite
+
+      - name: Checkout package infrastructure
+        uses: actions/checkout@v6
+
+      - name: Verify pinned recipe, patch and upstream key material
+        run: |
+          set -euo pipefail
+          bash -n arch/syncthing/PKGBUILD
+          grep -Fxq 'pkgname=(syncthing syncthing-discosrv syncthing-relaysrv)' arch/syncthing/PKGBUILD
+          grep -Fxq 'pkgver=2.1.7' arch/syncthing/PKGBUILD
+          grep -Fxq 'pkgrel=1' arch/syncthing/PKGBUILD
+          grep -Fq 'syncthing-source-v$pkgver.tar.gz' arch/syncthing/PKGBUILD
+          grep -Fq 'go run build.go -tags libsqlite3 -no-upgrade test' arch/syncthing/PKGBUILD
+          key=arch/syncthing/keys/pgp/37C84554E7E0A261E4F76E1ED26E6ED000654A3E.asc
+          test -s "$key"
+          gpg --batch --with-colons --show-keys "$key" |
+            awk -F: '$1 == "fpr" {print $10}' |
+            grep -Fxiq '37C84554E7E0A261E4F76E1ED26E6ED000654A3E'
+          for file in \
+            gcc-pie-segfaults-race.patch syncthing.install \
+            syncthing-discosrv.service syncthing-discosrv.sysusers syncthing-discosrv.tmpfiles \
+            syncthing-relaysrv.service syncthing-relaysrv.sysusers syncthing-relaysrv.tmpfiles; do
+            test -s "arch/syncthing/$file"
+          done
+
+      - name: Build and test as unprivileged user
+        run: |
+          set -euo pipefail
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          runuser -u builder -- \
+            bash -euo pipefail -c '
+              cd "$1"
+              gpg --batch --import keys/pgp/*.asc
+              makepkg --noconfirm --cleanbuild
+            ' _ "$GITHUB_WORKSPACE/arch/syncthing"
+
+      - name: Inspect candidate and record checksums
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(arch/syncthing/*.pkg.tar.zst)
+          (( ${#archives[@]} >= 3 && ${#archives[@]} <= 6 ))
+          names=(syncthing syncthing-discosrv syncthing-relaysrv)
+          for name in syncthing-debug syncthing-discosrv-debug syncthing-relaysrv-debug; do
+            if [[ -f "arch/syncthing/${name}-2.1.7-1-x86_64.pkg.tar.zst" ]]; then
+              names+=("$name")
+            fi
+          done
+          (( ${#names[@]} == ${#archives[@]} ))
+
+          mkdir -p candidate evidence
+          : > evidence/package-names.txt
+          for name in "${names[@]}"; do
+            file="${name}-2.1.7-1-x86_64.pkg.tar.zst"
+            source="arch/syncthing/$file"
+            test -s "$source"
+            bsdtar -xOf "$source" .PKGINFO | grep -Fxq "pkgname = $name"
+            cp -- "$source" candidate/
+            printf '%s\n' "$file" >> evidence/package-names.txt
+          done
+          for archive in "${archives[@]}"; do
+            test -f "candidate/${archive##*/}"
+          done
+
+          main=candidate/syncthing-2.1.7-1-x86_64.pkg.tar.zst
+          listing="$(mktemp)"
+          trap 'rm -f "$listing"' EXIT
+          bsdtar -tf "$main" | sed 's#^\./##' > "$listing"
+          grep -Fxq 'usr/bin/syncthing' "$listing"
+          grep -Fxq 'usr/lib/systemd/user/syncthing.service' "$listing"
+          grep -Fxq 'usr/lib/systemd/system/syncthing@.service' "$listing"
+          for name in syncthing-discosrv syncthing-relaysrv; do
+            bsdtar -tf "candidate/${name}-2.1.7-1-x86_64.pkg.tar.zst" |
+              sed 's#^\./##' > "$listing"
+            grep -Fxq "usr/bin/${name}" "$listing"
+            grep -Fxq "usr/lib/systemd/system/${name}.service" "$listing"
+            grep -Fxq "usr/lib/sysusers.d/${name}.conf" "$listing"
+            grep -Fxq "usr/lib/tmpfiles.d/${name}.conf" "$listing"
+          done
+
+          (cd candidate && sha256sum *.pkg.tar.zst > ../evidence/package-SHA256SUMS)
+          (cd candidate && sha256sum --check --strict ../evidence/package-SHA256SUMS)
+          {
+            echo '## Unsigned Syncthing candidate'
+            echo
+            echo "- Package count: ${#names[@]}"
+            echo '- Upstream source signature and Go test suite: **verified by makepkg**'
+            echo '- Package identities and systemd units: **validated**'
+            echo '- Repository-signed: **NO**'
+            echo '- Published: **NO**'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload unsigned candidate and evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: syncthing-${{ github.run_id }}-${{ github.run_attempt }}-candidate
+          path: |
+            candidate/
+            evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+  approval-ready:
+    name: Notify signing approval ready
+    needs: validate
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Pushover approval notification
+        env:
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$PUSHOVER_APP_TOKEN"
+          test -n "$PUSHOVER_USER_KEY"
+          curl --fail --silent --show-error \
+            --form-string "token=$PUSHOVER_APP_TOKEN" \
+            --form-string "user=$PUSHOVER_USER_KEY" \
+            --form-string 'title=Package approval required' \
+            --form-string 'message=Syncthing package(s) validated; review before signing and publication.' \
+            --form-string "url=https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --form-string 'url_title=Review deployment' \
+            https://api.pushover.net/1/messages.json
+
+  publish:
+    name: Sign and publish approved Syncthing package(s)
+    needs: [validate, approval-ready]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment:
+      name: arch-repo-publish
+    permissions:
+      contents: write
+    concurrency:
+      group: arch-repo-publish
+      cancel-in-progress: false
+      queue: max
+    container:
+      image: archlinux:latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install publishing dependencies
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed \
+            git github-cli gnupg python libarchive diffutils zstd
+
+      - name: Checkout package infrastructure
+        uses: actions/checkout@v6
+
+      - name: Trust checked-out repository
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Download exact validated candidate
+        uses: actions/download-artifact@v8
+        with:
+          name: syncthing-${{ github.run_id }}-${{ github.run_attempt }}-candidate
+          path: validated
+
+      - name: Verify validated candidate
+        run: |
+          set -euo pipefail
+          test -s validated/evidence/package-names.txt
+          test -s validated/evidence/package-SHA256SUMS
+          mapfile -t files < validated/evidence/package-names.txt
+          (( ${#files[@]} >= 3 && ${#files[@]} <= 6 ))
+          expected=(syncthing syncthing-discosrv syncthing-relaysrv)
+          for name in syncthing-debug syncthing-discosrv-debug syncthing-relaysrv-debug; do
+            for file in "${files[@]}"; do
+              if [[ "$file" == "${name}-2.1.7-1-x86_64.pkg.tar.zst" ]]; then
+                expected+=("$name")
+              fi
+            done
+          done
+          (( ${#expected[@]} == ${#files[@]} ))
+          for i in "${!files[@]}"; do
+            [[ "${files[i]}" == "${expected[i]}-2.1.7-1-x86_64.pkg.tar.zst" ]]
+          done
+          (cd validated/candidate && sha256sum --check --strict ../evidence/package-SHA256SUMS)
+          mapfile -t actual < <(find validated/candidate -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
+          mapfile -t expected_files < <(printf '%s\n' "${files[@]}" | LC_ALL=C sort)
+          [[ "${actual[*]}" == "${expected_files[*]}" ]]
+          for i in "${!files[@]}"; do
+            bsdtar -xOf "validated/candidate/${files[i]}" .PKGINFO |
+              grep -Fxq "pkgname = ${expected[i]}"
+          done
+          mkdir -p package-output
+          for file in "${files[@]}"; do
+            cp -- "validated/candidate/$file" package-output/
+          done
+          additional="$(printf '%s ' "${files[@]:1}")"
+          {
+            echo "PACKAGE_FILE=${files[0]}"
+            echo "ADDITIONAL_PACKAGE_FILES=${additional% }"
+          } >> "$GITHUB_ENV"
+
+      - name: Refuse existing version collisions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          remote_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+          read -r -a extras <<< "$ADDITIONAL_PACKAGE_FILES"
+          for package in "$PACKAGE_FILE" "${extras[@]}"; do
+            if grep -Fxq "$package" <<< "$remote_assets"; then
+              echo "Package version already exists in rolling release: $package" >&2
+              exit 1
+            fi
+          done
+
+      - name: Import repository signing subkey
+        env:
+          ARCH_REPO_SIGNING_KEY: ${{ secrets.ARCH_REPO_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$ARCH_REPO_SIGNING_KEY"
+          printf '%s\n' "$ARCH_REPO_SIGNING_KEY" | gpg --batch --import
+          gpg --batch --list-secret-keys "$SIGNING_SUBKEY"
+
+      - name: Sign approved packages
+        env:
+          ARCH_REPO_SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_SIGNING_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          read -r -a extras <<< "$ADDITIONAL_PACKAGE_FILES"
+          for name in "$PACKAGE_FILE" "${extras[@]}"; do
+            package="package-output/$name"
+            printf '%s' "$ARCH_REPO_SIGNING_PASSPHRASE" |
+              gpg --batch --yes --pinentry-mode loopback \
+                --passphrase-fd 0 \
+                --local-user "${SIGNING_SUBKEY}!" \
+                --output "${package}.sig" \
+                --detach-sign "$package"
+            gpg --verify "${package}.sig" "$package"
+          done
+
+      - name: Assemble signed repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ARCH_REPO_SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_SIGNING_PASSPHRASE }}
+        run: bash scripts/package-pipeline/assemble-repository.sh
+
+      - name: Publish rolling Arch repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/package-pipeline/publish-repository.sh
+
+      - name: Publication summary
+        run: |
+          {
+            echo '## Published Syncthing package(s)'
+            echo
+            echo "- Main package: \`$PACKAGE_FILE\`"
+            echo "- Additional packages: \`$ADDITIONAL_PACKAGE_FILES\`"
+            echo "- Repository: \`$REPO_NAME\`"
+            echo '- Human signing approval: **PASSED**'
+            echo '- Packages and repository databases signed'
+          } >> "$GITHUB_STEP_SUMMARY"
