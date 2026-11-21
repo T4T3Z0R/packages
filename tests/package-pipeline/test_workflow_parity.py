@@ -10,6 +10,7 @@ class WorkflowParityTests(unittest.TestCase):
             "publish-noctalia-greeter.yml",
             "publish-wezterm.yml",
             "publish-ghostty.yml",
+            "publish-keepassxc.yml",
         )
 
         for name in names:
@@ -127,6 +128,34 @@ class WorkflowParityTests(unittest.TestCase):
         self.assertNotIn("gh release upload", source)
         self.assertNotIn("gh release delete-asset", source)
         self.assertNotIn("default: v1.2.1", source)
+
+
+    def test_keepassxc_shared_pipeline(self):
+        source = (
+            ROOT / ".github/workflows/publish-keepassxc.yml"
+        ).read_text()
+
+        required = (
+            "PACKAGE_NAME: keepassxc",
+            "name: Build and validate unsigned KeePassXC",
+            "makepkg --noconfirm --cleanbuild",
+            "name: Download exact validated candidate",
+            "name: Verify validated candidate",
+            "name: Sign approved packages",
+            "name: Send Pushover approval notification",
+            "name: arch-repo-publish",
+            "name: Refuse existing version collisions",
+            "scripts/package-pipeline/assemble-repository.sh",
+            "scripts/package-pipeline/publish-repository.sh",
+        )
+        for marker in required:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, source)
+
+        self.assertNotIn("makepkg --noconfirm --cleanbuild --nocheck", source)
+        self.assertNotIn("gh release upload", source)
+        self.assertNotIn("gh release delete-asset", source)
+
 
 
 if __name__ == "__main__":
