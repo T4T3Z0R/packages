@@ -8,6 +8,7 @@
     "syncthing": 3,
     "syncthing-discosrv": 3,
     "syncthing-relaysrv": 3,
+    "syncthing-debug": 3,
     "moonlight-qt": 2,
     "ghostty": 2,
     "wezterm": 2,
