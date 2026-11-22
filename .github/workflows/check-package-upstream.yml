@@ -1,0 +1,94 @@
+name: Check package upstream updates
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 10 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-package-upstream
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    name: Report approved upstream updates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: archlinux:latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install discovery dependencies
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed python git
+          command -v vercmp
+
+      - name: Checkout package infrastructure
+        uses: actions/checkout@v6
+
+      - name: Discover upstream candidates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/validate_manifest.py
+          python3 scripts/package-pipeline/report_upstream.py |
+            tee upstream-report.json
+
+      - name: Summarize discovery results
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          results = json.loads(
+              Path("upstream-report.json").read_text()
+          )
+
+          lines = [
+              "## Upstream package discovery",
+              "",
+              "| Package | Status | Selected | Candidate |",
+              "|---|---|---|---|",
+          ]
+
+          for item in results:
+              lines.append(
+                  f"| {item['package']} "
+                  f"| {item['status']} "
+                  f"| `{item['selected']}` "
+                  f"| `{item['candidate']}` |"
+              )
+
+          lines.extend([
+              "",
+              "Discovery only. No package selections changed.",
+              "No builds, signing, or publication requested.",
+          ])
+
+          with open(
+              os.environ["GITHUB_STEP_SUMMARY"],
+              "a",
+              encoding="utf-8",
+          ) as summary:
+              summary.write("\n".join(lines) + "\n")
+
+          print("\n".join(lines))
+          PY
+
+      - name: Upload discovery report
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-report-${{ github.run_id }}
+          path: upstream-report.json
+          if-no-files-found: error
+          retention-days: 7
