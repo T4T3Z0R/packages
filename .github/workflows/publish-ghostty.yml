@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'arch/ghostty/**'
+      - 'arch/packages/manifest.json'
       - 'arch/packages/retention.json'
       - '.github/workflows/publish-ghostty.yml'
   workflow_dispatch:
@@ -33,12 +34,18 @@ jobs:
         run: |
           set -euo pipefail
           pacman -Syu --noconfirm --needed \
-            base-devel git libarchive zig blueprint-compiler pandoc-cli \
+            base-devel git python libarchive zig blueprint-compiler pandoc-cli \
             bzip2 fontconfig freetype2 glibc glib2 gtk4 gtk4-layer-shell \
             libx11 harfbuzz libadwaita libpng oniguruma pixman wayland zlib
 
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
+
+      - name: Load verified Ghostty source selection
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/verify_source_contract.py --package ghostty |
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print("PKGVER="+d["source_value"]); print("PKGREL="+str(d["pkgrel"]))' >> "$GITHUB_ENV"
 
       - name: Verify pinned recipe and compiler
         run: |
@@ -48,14 +55,12 @@ jobs:
           grep -Fxq \
             'pkgname=(ghostty ghostty-shell-integration ghostty-terminfo ghostty-nautilus)' \
             arch/ghostty/PKGBUILD
-          grep -Fxq 'pkgver=1.4.0' arch/ghostty/PKGBUILD
-          grep -Fxq 'pkgrel=1' arch/ghostty/PKGBUILD
           grep -Fxq \
             "sha256sums=('2e2a2516f9bea89a4991ad7c9401b77682eed366387a5b1d7c629472b5d11a43')" \
             arch/ghostty/PKGBUILD
           case "$(zig version)" in
             0.17.*) ;;
-            *) echo "Ghostty 1.4.0 requires Zig 0.17.x" >&2; exit 1 ;;
+            *) echo "Ghostty ${PKGVER} currently requires Zig 0.17.x" >&2; exit 1 ;;
           esac
 
       - name: Build split packages as unprivileged user
@@ -79,7 +84,7 @@ jobs:
           }
 
           names=(ghostty ghostty-shell-integration ghostty-terminfo ghostty-nautilus)
-          if [[ -f arch/ghostty/ghostty-debug-1.4.0-1-x86_64.pkg.tar.zst ]]; then
+          if [[ -f arch/ghostty/ghostty-debug-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst ]]; then
             names+=(ghostty-debug)
           fi
           (( ${#names[@]} == ${#archives[@]} ))
@@ -87,7 +92,7 @@ jobs:
           mkdir -p candidate evidence
           : > evidence/package-names.txt
           for name in "${names[@]}"; do
-            file="${name}-1.4.0-1-x86_64.pkg.tar.zst"
+            file="${name}-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst"
             source="arch/ghostty/$file"
             test -s "$source"
             bsdtar -xOf "$source" .PKGINFO | grep -Fxq "pkgname = $name"
@@ -100,16 +105,16 @@ jobs:
             test -f "candidate/${archive##*/}"
           done
 
-          main=candidate/ghostty-1.4.0-1-x86_64.pkg.tar.zst
+          main=candidate/ghostty-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst
           listing="$(mktemp)"
           trap 'rm -f "$listing"' EXIT
           bsdtar -tf "$main" | sed 's#^\./##' > "$listing"
           grep -Fxq 'usr/bin/ghostty' "$listing"
           grep -Fxq 'usr/share/applications/com.mitchellh.ghostty.desktop' "$listing"
-          integration=candidate/ghostty-shell-integration-1.4.0-1-x86_64.pkg.tar.zst
+          integration=candidate/ghostty-shell-integration-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst
           bsdtar -tf "$integration" > "$listing"
           grep -q 'shell-integration/' "$listing"
-          terminfo=candidate/ghostty-terminfo-1.4.0-1-x86_64.pkg.tar.zst
+          terminfo=candidate/ghostty-terminfo-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst
           bsdtar -tf "$terminfo" > "$listing"
           grep -q 'usr/share/terminfo/' "$listing"
 
@@ -186,6 +191,12 @@ jobs:
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
 
+      - name: Load verified Ghostty source selection
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/verify_source_contract.py --package ghostty |
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print("PKGVER="+d["source_value"]); print("PKGREL="+str(d["pkgrel"]))' >> "$GITHUB_ENV"
+
       - name: Trust checked-out repository
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
@@ -205,7 +216,7 @@ jobs:
           expected=(ghostty ghostty-shell-integration ghostty-terminfo ghostty-nautilus)
           if (( ${#files[@]} == 5 )); then expected+=(ghostty-debug); fi
           for i in "${!files[@]}"; do
-            [[ "${files[i]}" == "${expected[i]}-1.4.0-1-x86_64.pkg.tar.zst" ]]
+            [[ "${files[i]}" == "${expected[i]}-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst" ]]
           done
           (cd validated/candidate && sha256sum --check --strict ../evidence/package-SHA256SUMS)
           mapfile -t actual < <(find validated/candidate -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
