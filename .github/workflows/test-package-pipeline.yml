@@ -84,6 +84,7 @@ jobs:
           python -m unittest discover -s tests/package-pipeline -p 'test_package_selection.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_package_fingerprint.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_validation_ledger.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_github_validation_history.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_source_contract.py' -v
           for package in ghostty keepassxc syncthing wezterm; do
             python scripts/package-pipeline/verify_source_contract.py --package "$package"

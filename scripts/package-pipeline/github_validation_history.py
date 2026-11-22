@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Read complete GitHub Actions validation evidence.
+
+No workflow dispatch, mutation, signing, or publishing.
+"""
+
+import json
+import subprocess
+
+from select_package_validation import SUPPORTED
+
+PER_PAGE = 100
+MAX_PAGES = 100
+
+
+def github_api(endpoint):
+    """Fetch one GitHub REST API response using gh authentication."""
+    result = subprocess.run(
+        ["gh", "api", "--method", "GET", endpoint],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
+
+
+def fetch_pages(api, endpoint, collection):
+    """Retrieve a complete GitHub collection, rejecting partial data."""
+    items = []
+    expected_count = None
+
+    for page in range(1, MAX_PAGES + 1):
+        separator = "&" if "?" in endpoint else "?"
+        url = (
+            f"{endpoint}{separator}"
+            f"per_page={PER_PAGE}&page={page}"
+        )
+
+        response = api(url)
+
+        if not isinstance(response, dict):
+            raise ValueError("Invalid GitHub API response")
+
+        count = response.get("total_count")
+        batch = response.get(collection)
+
+        if type(count) is not int or count < 0:
+            raise ValueError("Invalid GitHub collection count")
+        if not isinstance(batch, list):
+            raise ValueError("Invalid GitHub collection data")
+
+        if expected_count is None:
+            expected_count = count
+        elif count != expected_count:
+            raise ValueError(
+                "GitHub collection changed during pagination"
+            )
+
+        if len(batch) > PER_PAGE:
+            raise ValueError("Oversized GitHub API page")
+
+        items.extend(batch)
+
+        if len(items) > expected_count:
+            raise ValueError(
+                "GitHub collection exceeds reported count"
+            )
+
+        if len(items) == expected_count:
+            return items
+
+        if len(batch) != PER_PAGE:
+            raise ValueError(
+                "Incomplete GitHub API page"
+            )
+
+    raise ValueError("GitHub history exceeds pagination limit")
+
+
+def validation_runs(api, repo, package):
+    if package not in SUPPORTED:
+        raise ValueError("Unsupported package")
+
+    workflow = f"publish-{package}.yml"
+
+    return fetch_pages(
+        api,
+        f"repos/{repo}/actions/workflows/{workflow}/runs"
+        "?event=workflow_dispatch",
+        "workflow_runs",
+    )
+
+
+def run_evidence(api, repo, run_id):
+    if type(run_id) is not int or run_id <= 0:
+        raise ValueError("Invalid workflow run ID")
+
+    base = f"repos/{repo}/actions/runs/{run_id}"
+
+    jobs = fetch_pages(api, f"{base}/jobs", "jobs")
+    artifacts = fetch_pages(
+        api, f"{base}/artifacts", "artifacts"
+    )
+
+    return jobs, artifacts
