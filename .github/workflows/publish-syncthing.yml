@@ -1,14 +1,13 @@
 name: Publish Syncthing
 
 on:
-  pull_request:
-    paths:
-      - 'arch/syncthing/**'
-      - 'arch/packages/manifest.json'
-      - 'arch/packages/retention.json'
-      - '.github/workflows/publish-syncthing.yml'
   workflow_dispatch:
-
+    inputs:
+      publish:
+        description: 'Request protected signing and publication after validation'
+        type: boolean
+        required: true
+        default: false
 permissions:
   contents: read
 
@@ -145,7 +144,7 @@ jobs:
   approval-ready:
     name: Notify signing approval ready
     needs: validate
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.publish == true
     runs-on: ubuntu-latest
     steps:
       - name: Send Pushover approval notification
@@ -168,7 +167,7 @@ jobs:
   publish:
     name: Sign and publish approved Syncthing package(s)
     needs: [validate, approval-ready]
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.publish == true
     runs-on: ubuntu-latest
     environment:
       name: arch-repo-publish
