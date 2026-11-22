@@ -9,7 +9,13 @@ MANIFEST = ROOT / "arch/packages/manifest.json"
 
 PACKAGE_NAME = re.compile(r"[a-z][a-z0-9-]*", re.ASCII)
 UPSTREAM = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", re.ASCII)
-STABLE_TAG = re.compile(r"v[0-9]+(?:[.][0-9]+){2}(?:[.][0-9]+)?", re.ASCII)
+STABLE_TAG = re.compile(r"(?:v)?[0-9]+(?:[.][0-9]+){2}(?:[.][0-9]+)?", re.ASCII)
+COMMIT_SHA = re.compile(r"[0-9a-f]{40}", re.ASCII)
+
+STABLE_POLICIES = {"stable-tag", "pinned-tag"}
+COMMIT_POLICIES = {"development-commit", "pinned-commit"}
+SUPPORTED_POLICIES = STABLE_POLICIES | COMMIT_POLICIES
+
 
 REQUIRED_FIELDS = {
     "upstream", "source_ref", "release_policy",
@@ -44,18 +50,37 @@ def validate():
         if not UPSTREAM.fullmatch(config["upstream"]):
             raise ValueError(f"{name}: invalid upstream repository")
 
-        if config["release_policy"] != "stable-tag":
+        policy = config["release_policy"]
+        ref = config["source_ref"]
+
+        if policy not in SUPPORTED_POLICIES:
             raise ValueError(f"{name}: unsupported release policy")
 
-        if not STABLE_TAG.fullmatch(config["source_ref"]):
-            raise ValueError(f"{name}: invalid stable tag")
+        if policy in STABLE_POLICIES:
+            if not STABLE_TAG.fullmatch(ref):
+                raise ValueError(f"{name}: invalid stable tag")
 
-        expected = f"arch/packages/{name}/PKGBUILD.in"
-        if config["recipe"] != expected:
-            raise ValueError(f"{name}: recipe path must be {expected}")
+        if policy in COMMIT_POLICIES:
+            if not COMMIT_SHA.fullmatch(ref):
+                raise ValueError(f"{name}: invalid commit SHA")
+
+        allowed_recipes = {
+            f"arch/{name}/PKGBUILD",
+            f"arch/{name}/PKGBUILD.in",
+            f"arch/packages/{name}/PKGBUILD.in",
+        }
+        recipe = config["recipe"]
+
+        if recipe not in allowed_recipes:
+            raise ValueError(f"{name}: unsupported recipe path")
 
         if config["status"] not in ("candidate", "approved"):
             raise ValueError(f"{name}: invalid status")
+
+        if config["status"] == "approved":
+            recipe_path = ROOT / recipe
+            if not recipe_path.is_file():
+                raise ValueError(f"{name}: approved recipe is missing")
 
         if type(config["auto_publish"]) is not bool:
             raise ValueError(f"{name}: auto_publish must be boolean")

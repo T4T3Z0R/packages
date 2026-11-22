@@ -11,6 +11,7 @@ on:
       - "tests/package-pipeline/**"
       - "arch/packages/**"
       - ".github/workflows/test-package-pipeline.yml"
+      - ".github/workflows/check-package-upstream.yml"
       - ".github/workflows/publish-noctalia-greeter.yml"
       - ".github/workflows/publish-noctalia-custom.yml"
       - ".github/workflows/publish-gameshell.yml"
@@ -24,6 +25,7 @@ on:
       - "tests/package-pipeline/**"
       - "arch/packages/**"
       - ".github/workflows/test-package-pipeline.yml"
+      - ".github/workflows/check-package-upstream.yml"
       - ".github/workflows/publish-noctalia-greeter.yml"
       - ".github/workflows/publish-noctalia-custom.yml"
       - ".github/workflows/publish-gameshell.yml"
@@ -68,6 +70,26 @@ jobs:
 
       - name: Run unit tests
         run: python -m unittest discover -s tests/package-pipeline -p "test_assembly.py" -v && python -m unittest discover -s tests/package-pipeline -p "test_manifest.py" -v && python -m unittest discover -s tests/package-pipeline -p "test_noctalia_namcap.py" -v && python -m unittest discover -s tests/package-pipeline -p "test_workflow_parity.py" -v
+
+      - name: Validate release policies and candidate decisions
+        run: |
+          set -euo pipefail
+          command -v vercmp
+          python scripts/package-pipeline/validate_manifest.py
+          python -m unittest discover -s tests/package-pipeline -p 'test_manifest.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_release_candidates.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_upstream_discovery.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_upstream_checker.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_upstream_report.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_package_selection.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_package_fingerprint.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_validation_ledger.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_github_validation_history.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_evaluate_validation.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_source_contract.py' -v
+          for package in ghostty keepassxc syncthing wezterm; do
+            python scripts/package-pipeline/verify_source_contract.py --package "$package"
+          done
 
       - name: Run real-package integration tests
         run: python -m unittest discover -s tests/package-pipeline -p "test_integration.py" -v
