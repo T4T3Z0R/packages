@@ -139,10 +139,10 @@ def evaluate(api, repo, package, target, historical):
                 "Unexpected completed-run classification"
             )
 
-    if validated:
-        decision = "validated"
-    elif active:
+    if active:
         decision = "in_flight"
+    elif validated:
+        decision = "validated"
     else:
         decision = "needs_validation"
 

@@ -149,6 +149,16 @@ class EvaluationTests(unittest.TestCase):
         ])
         self.assertEqual(result["decision"], "in_flight")
 
+    def test_active_run_precedes_successful_validation(self):
+        result = self.check([
+            run(124, "in_progress", None),
+            run(123, "completed", "success"),
+        ])
+
+        self.assertEqual(result["decision"], "in_flight")
+        self.assertEqual(result["active_runs"], [124])
+        self.assertEqual(result["validated_runs"], [123])
+
     def test_invalid_repository_rejected(self):
         with self.assertRaises(ValueError):
             evaluate(
