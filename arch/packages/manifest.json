@@ -9,6 +9,42 @@
       "recipe": "arch/packages/yazi/PKGBUILD.in",
       "status": "candidate",
       "auto_publish": false
+    },
+    "ghostty": {
+      "upstream": "ghostty-org/ghostty",
+      "source_ref": "v1.4.0",
+      "release_policy": "stable-tag",
+      "license": "MIT",
+      "recipe": "arch/ghostty/PKGBUILD",
+      "status": "approved",
+      "auto_publish": false
+    },
+    "keepassxc": {
+      "upstream": "keepassxreboot/keepassxc",
+      "source_ref": "2.8.0",
+      "release_policy": "stable-tag",
+      "license": "GPL-3.0-only",
+      "recipe": "arch/keepassxc/PKGBUILD",
+      "status": "approved",
+      "auto_publish": false
+    },
+    "syncthing": {
+      "upstream": "syncthing/syncthing",
+      "source_ref": "v2.1.7",
+      "release_policy": "stable-tag",
+      "license": "MPL-2.0",
+      "recipe": "arch/syncthing/PKGBUILD",
+      "status": "approved",
+      "auto_publish": false
+    },
+    "wezterm": {
+      "upstream": "wezterm/wezterm",
+      "source_ref": "e1eae81a56be8b5487dc77a29616afa568fb57b7",
+      "release_policy": "development-commit",
+      "license": "MIT",
+      "recipe": "arch/wezterm/PKGBUILD",
+      "status": "approved",
+      "auto_publish": false
     }
   }
 }

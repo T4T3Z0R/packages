@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = ROOT / "arch/packages/manifest.json"
 
 UPSTREAM = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
-STABLE_TAG = re.compile(r"v[0-9]+(?:\.[0-9]+){2}(?:\.[0-9]+)?\Z")
+STABLE_TAG = re.compile(r"(?:v)?[0-9]+(?:\.[0-9]+){2}(?:\.[0-9]+)?\Z")
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 

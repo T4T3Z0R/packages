@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 STABLE_TAG = re.compile(
-    r"v[0-9]+(?:[.][0-9]+){2}(?:[.][0-9]+)?\Z"
+    r"(?:v)?[0-9]+(?:[.][0-9]+){2}(?:[.][0-9]+)?\Z"
 )
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 

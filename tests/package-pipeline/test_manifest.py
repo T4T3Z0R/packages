@@ -67,6 +67,55 @@ class ManifestTests(unittest.TestCase):
         data["packages"]["yazi"]["recipe"] = "../../PKGBUILD"
         self.check(data, False)
 
+    def test_existing_fixed_recipe(self):
+        data = copy.deepcopy(self.original)
+        package = data["packages"]["yazi"]
+        package["recipe"] = "arch/yazi/PKGBUILD"
+        package["status"] = "candidate"
+        self.check(data, True)
+
+    def test_existing_template_recipe(self):
+        data = copy.deepcopy(self.original)
+        package = data["packages"]["yazi"]
+        package["recipe"] = "arch/yazi/PKGBUILD.in"
+        package["status"] = "candidate"
+        self.check(data, True)
+
+    def test_cross_package_recipe_rejected(self):
+        data = copy.deepcopy(self.original)
+        data["packages"]["yazi"]["recipe"] = "arch/ghostty/PKGBUILD"
+        self.check(data, False)
+
+    def test_approved_missing_recipe_rejected(self):
+        data = copy.deepcopy(self.original)
+        data["packages"]["yazi"]["status"] = "approved"
+        self.check(data, False)
+
+    def test_approved_existing_recipe(self):
+        data = copy.deepcopy(self.original)
+        self.assertEqual(
+            data["packages"]["ghostty"]["recipe"],
+            "arch/ghostty/PKGBUILD",
+        )
+        self.check(data, True)
+
+    def test_unprefixed_stable_tag(self):
+        data = copy.deepcopy(self.original)
+        data["packages"]["keepassxc"]["source_ref"] = "2.8.0"
+        self.check(data, True)
+
+    def test_registered_packages_have_real_recipes(self):
+        for name in ("ghostty", "keepassxc", "syncthing", "wezterm"):
+            with self.subTest(package=name):
+                package = self.original["packages"][name]
+                self.assertEqual(package["status"], "approved")
+                self.assertTrue((ROOT / package["recipe"]).is_file())
+
+    def test_approved_missing_real_recipe(self):
+        data = copy.deepcopy(self.original)
+        data["packages"]["ghostty"]["recipe"] = "arch/ghostty/PKGBUILD.in"
+        self.check(data, False)
+
     def test_unapproved_policy(self):
         data = copy.deepcopy(self.original)
         data["packages"]["yazi"]["release_policy"] = "arbitrary-commit"
