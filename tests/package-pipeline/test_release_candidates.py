@@ -1,6 +1,7 @@
 import importlib.util
 import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -101,6 +102,52 @@ class CandidateTests(unittest.TestCase):
             self.decide(
                 "development-commit", "a" * 40, "main"
             )
+
+    def test_real_git_ancestry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+
+            def git(*args):
+                return subprocess.check_output(
+                    ["git", "-C", str(repo), *args],
+                    text=True,
+                    stderr=subprocess.PIPE,
+                ).strip()
+
+            git("init", "-q")
+            git("config", "user.name", "Release Test")
+            git("config", "user.email", "test@example.invalid")
+
+            git("commit", "--allow-empty", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+
+            git("commit", "--allow-empty", "-qm", "selected")
+            selected = git("rev-parse", "HEAD")
+
+            git("commit", "--allow-empty", "-qm", "candidate")
+            candidate = git("rev-parse", "HEAD")
+
+            self.assertTrue(
+                resolver.descendant_of(selected, candidate, repo)
+            )
+            self.assertFalse(
+                resolver.descendant_of(candidate, selected, repo)
+            )
+
+            git("checkout", "-qb", "divergent", base)
+            git("commit", "--allow-empty", "-qm", "other")
+            divergent = git("rev-parse", "HEAD")
+
+            self.assertFalse(
+                resolver.descendant_of(selected, divergent, repo)
+            )
+
+            with self.assertRaisesRegex(
+                RuntimeError, "Missing or invalid Git commit"
+            ):
+                resolver.descendant_of(
+                    selected, "f" * 40, repo
+                )
 
     def test_unknown_policy(self):
         with self.assertRaises(ValueError):

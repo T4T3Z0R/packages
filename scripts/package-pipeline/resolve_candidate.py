@@ -33,6 +33,18 @@ def compare_versions(current, candidate):
 
 def descendant_of(current, candidate, repo):
     """Check whether candidate descends from current."""
+    for ref in (current, candidate):
+        verified = subprocess.run(
+            ["git", "-C", str(repo), "cat-file",
+             "-e", f"{ref}^{{commit}}"],
+            capture_output=True,
+            text=True,
+        )
+        if verified.returncode != 0:
+            raise RuntimeError(
+                f"Missing or invalid Git commit: {ref}"
+            )
+
     result = subprocess.run(
         ["git", "-C", str(repo), "merge-base",
          "--is-ancestor", current, candidate],
