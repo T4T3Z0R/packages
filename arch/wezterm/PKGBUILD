@@ -55,7 +55,11 @@ sha256sums=('SKIP'
 
 pkgver() {
   cd "$pkgname"
-  git describe --tags --match "20*" | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
+  local description commit
+  description="$(git describe --tags --match "20*" --long)"
+  commit="$(git rev-parse HEAD)"
+  printf '%s-g%s\n' "${description%-g*}" "${commit:0:9}" |
+    sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
 }
 
 prepare() {

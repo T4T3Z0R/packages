@@ -61,6 +61,10 @@ def verify(name, config, root=ROOT):
             f"manifest={expected}, recipe={actual}"
         )
 
+    pkgver = assignment(source, "pkgver")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+_]*", pkgver):
+        raise ValueError(f"{name}: invalid pkgver")
+
     pkgrel = assignment(source, "pkgrel")
     if not re.fullmatch(r"[1-9][0-9]*", pkgrel):
         raise ValueError(f"{name}: invalid pkgrel")
@@ -70,6 +74,7 @@ def verify(name, config, root=ROOT):
         "source_ref": selected,
         "source_field": field,
         "source_value": actual,
+        "pkgver": pkgver,
         "pkgrel": int(pkgrel),
         "recipe": recipe,
         "verified": True,
