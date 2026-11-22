@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'arch/syncthing/**'
+      - 'arch/packages/manifest.json'
       - 'arch/packages/retention.json'
       - '.github/workflows/publish-syncthing.yml'
   workflow_dispatch:
@@ -33,18 +34,22 @@ jobs:
         run: |
           set -euo pipefail
           pacman -Syu --noconfirm --needed \
-            base-devel git go gnupg libarchive glibc sqlite
+            base-devel git go python gnupg libarchive glibc sqlite
 
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
+
+      - name: Load verified Syncthing source selection
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/verify_source_contract.py --package syncthing |
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print("PKGVER="+d["source_value"]); print("PKGREL="+str(d["pkgrel"]))' >> "$GITHUB_ENV"
 
       - name: Verify pinned recipe, patch and upstream key material
         run: |
           set -euo pipefail
           bash -n arch/syncthing/PKGBUILD
           grep -Fxq 'pkgname=(syncthing syncthing-discosrv syncthing-relaysrv)' arch/syncthing/PKGBUILD
-          grep -Fxq 'pkgver=2.1.7' arch/syncthing/PKGBUILD
-          grep -Fxq 'pkgrel=1' arch/syncthing/PKGBUILD
           grep -Fq 'syncthing-source-v$pkgver.tar.gz' arch/syncthing/PKGBUILD
           grep -Fq 'go run build.go -tags libsqlite3 -no-upgrade test' arch/syncthing/PKGBUILD
           key=arch/syncthing/keys/pgp/37C84554E7E0A261E4F76E1ED26E6ED000654A3E.asc
@@ -79,7 +84,7 @@ jobs:
           (( ${#archives[@]} >= 3 && ${#archives[@]} <= 6 ))
           names=(syncthing syncthing-discosrv syncthing-relaysrv)
           for name in syncthing-debug syncthing-discosrv-debug syncthing-relaysrv-debug; do
-            if [[ -f "arch/syncthing/${name}-2.1.7-1-x86_64.pkg.tar.zst" ]]; then
+            if [[ -f "arch/syncthing/${name}-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst" ]]; then
               names+=("$name")
             fi
           done
@@ -88,7 +93,7 @@ jobs:
           mkdir -p candidate evidence
           : > evidence/package-names.txt
           for name in "${names[@]}"; do
-            file="${name}-2.1.7-1-x86_64.pkg.tar.zst"
+            file="${name}-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst"
             source="arch/syncthing/$file"
             test -s "$source"
             bsdtar -xOf "$source" .PKGINFO | grep -Fxq "pkgname = $name"
@@ -99,7 +104,7 @@ jobs:
             test -f "candidate/${archive##*/}"
           done
 
-          main=candidate/syncthing-2.1.7-1-x86_64.pkg.tar.zst
+          main=candidate/syncthing-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst
           listing="$(mktemp)"
           trap 'rm -f "$listing"' EXIT
           bsdtar -tf "$main" | sed 's#^\./##' > "$listing"
@@ -107,7 +112,7 @@ jobs:
           grep -Fxq 'usr/lib/systemd/user/syncthing.service' "$listing"
           grep -Fxq 'usr/lib/systemd/system/syncthing@.service' "$listing"
           for name in syncthing-discosrv syncthing-relaysrv; do
-            bsdtar -tf "candidate/${name}-2.1.7-1-x86_64.pkg.tar.zst" |
+            bsdtar -tf "candidate/${name}-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst" |
               sed 's#^\./##' > "$listing"
             grep -Fxq "usr/bin/${name}" "$listing"
             grep -Fxq "usr/lib/systemd/system/${name}.service" "$listing"
@@ -189,6 +194,12 @@ jobs:
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
 
+      - name: Load verified Syncthing source selection
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/verify_source_contract.py --package syncthing |
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print("PKGVER="+d["source_value"]); print("PKGREL="+str(d["pkgrel"]))' >> "$GITHUB_ENV"
+
       - name: Trust checked-out repository
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
@@ -208,14 +219,14 @@ jobs:
           expected=(syncthing syncthing-discosrv syncthing-relaysrv)
           for name in syncthing-debug syncthing-discosrv-debug syncthing-relaysrv-debug; do
             for file in "${files[@]}"; do
-              if [[ "$file" == "${name}-2.1.7-1-x86_64.pkg.tar.zst" ]]; then
+              if [[ "$file" == "${name}-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst" ]]; then
                 expected+=("$name")
               fi
             done
           done
           (( ${#expected[@]} == ${#files[@]} ))
           for i in "${!files[@]}"; do
-            [[ "${files[i]}" == "${expected[i]}-2.1.7-1-x86_64.pkg.tar.zst" ]]
+            [[ "${files[i]}" == "${expected[i]}-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst" ]]
           done
           (cd validated/candidate && sha256sum --check --strict ../evidence/package-SHA256SUMS)
           mapfile -t actual < <(find validated/candidate -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
