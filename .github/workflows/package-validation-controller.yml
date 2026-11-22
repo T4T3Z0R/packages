@@ -1,0 +1,29 @@
+name: Package validation controller
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-validation-controller
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  controller:
+    name: Verify controller configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Confirm read-only controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Package validation controller initialized"
+          echo "Concurrency: package-validation-controller"
+          echo "Dispatch: disabled"
+          echo "Signing: disabled"
+          echo "Publication: disabled"
