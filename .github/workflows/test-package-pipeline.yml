@@ -89,6 +89,7 @@ jobs:
           python -m unittest discover -s tests/package-pipeline -p 'test_candidate_review.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_candidate_issue_state.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_github_candidate_issues.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_create_candidate_issue.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_source_contract.py' -v
           for package in ghostty keepassxc syncthing wezterm; do
             python scripts/package-pipeline/verify_source_contract.py --package "$package"
