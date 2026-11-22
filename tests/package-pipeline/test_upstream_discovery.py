@@ -1,0 +1,132 @@
+import importlib.util
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "scripts/package-pipeline/discover_upstream.py"
+
+spec = importlib.util.spec_from_file_location("upstream_discovery", SCRIPT)
+discovery = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(discovery)
+
+
+class DiscoveryTests(unittest.TestCase):
+    def config(self, policy="stable-tag", ref="v2.1.7"):
+        return {
+            "upstream": "example/project",
+            "release_policy": policy,
+            "source_ref": ref,
+        }
+
+    def test_stable_release(self):
+        calls = []
+
+        def fetch(url):
+            calls.append(url)
+            return {
+                "tag_name": "v2.1.8",
+                "draft": False,
+                "prerelease": False,
+            }
+
+        result = discovery.discover(
+            "example", self.config(), fetch
+        )
+        self.assertEqual(result["candidate"], "v2.1.8")
+        self.assertEqual(result["channel"], "stable-release")
+        self.assertEqual(
+            calls,
+            ["https://api.github.com/repos/example/project/releases/latest"],
+        )
+
+    def test_reject_prerelease(self):
+        with self.assertRaises(ValueError):
+            discovery.discover(
+                "example", self.config(),
+                lambda url: {
+                    "tag_name": "v2.1.8",
+                    "prerelease": True,
+                },
+            )
+
+    def test_reject_malformed_tag(self):
+        with self.assertRaises(ValueError):
+            discovery.discover(
+                "example", self.config(),
+                lambda url: {"tag_name": "release-latest"},
+            )
+
+    def test_development_default_branch(self):
+        calls = []
+
+        def fetch(url):
+            calls.append(url)
+            if url.endswith("/example/project"):
+                return {"default_branch": "main"}
+            return {"sha": "b" * 40}
+
+        result = discovery.discover(
+            "example",
+            self.config("development-commit", "a" * 40),
+            fetch,
+        )
+        self.assertEqual(result["candidate"], "b" * 40)
+        self.assertEqual(
+            calls[-1],
+            "https://api.github.com/repos/example/project/commits/main",
+        )
+
+    def test_development_invalid_sha(self):
+        def fetch(url):
+            if url.endswith("/example/project"):
+                return {"default_branch": "main"}
+            return {"sha": "main"}
+
+        with self.assertRaises(ValueError):
+            discovery.discover(
+                "example",
+                self.config("development-commit", "a" * 40),
+                fetch,
+            )
+
+    def test_pinned_tag_makes_no_requests(self):
+        def forbidden(url):
+            self.fail("Pinned package must not contact upstream")
+
+        result = discovery.discover(
+            "example",
+            self.config("pinned-tag", "v2.1.7"),
+            forbidden,
+        )
+        self.assertEqual(result["candidate"], "v2.1.7")
+        self.assertEqual(result["channel"], "pinned")
+
+    def test_pinned_commit_makes_no_requests(self):
+        def forbidden(url):
+            self.fail("Pinned package must not contact upstream")
+
+        result = discovery.discover(
+            "example",
+            self.config("pinned-commit", "a" * 40),
+            forbidden,
+        )
+        self.assertEqual(result["candidate"], "a" * 40)
+
+    def test_unsupported_policy(self):
+        with self.assertRaises(ValueError):
+            discovery.discover(
+                "example", self.config("automatic-chaos"),
+                lambda url: {},
+            )
+
+    def test_invalid_repository(self):
+        config = self.config()
+        config["upstream"] = "../example"
+        with self.assertRaises(ValueError):
+            discovery.discover(
+                "example", config, lambda url: {},
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()
