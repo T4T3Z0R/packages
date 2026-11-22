@@ -72,6 +72,37 @@ class ManifestTests(unittest.TestCase):
         data["packages"]["yazi"]["release_policy"] = "arbitrary-commit"
         self.check(data, False)
 
+    def test_pinned_stable_release(self):
+        data = copy.deepcopy(self.original)
+        data["packages"]["yazi"]["release_policy"] = "pinned-tag"
+        self.check(data, True)
+
+    def test_development_commit(self):
+        data = copy.deepcopy(self.original)
+        package = data["packages"]["yazi"]
+        package["release_policy"] = "development-commit"
+        package["source_ref"] = "a" * 40
+        self.check(data, True)
+
+    def test_pinned_commit(self):
+        data = copy.deepcopy(self.original)
+        package = data["packages"]["yazi"]
+        package["release_policy"] = "pinned-commit"
+        package["source_ref"] = "b" * 40
+        self.check(data, True)
+
+    def test_development_ref_must_be_immutable(self):
+        data = copy.deepcopy(self.original)
+        package = data["packages"]["yazi"]
+        package["release_policy"] = "development-commit"
+        package["source_ref"] = "main"
+        self.check(data, False)
+
+    def test_stable_policy_rejects_commit(self):
+        data = copy.deepcopy(self.original)
+        data["packages"]["yazi"]["source_ref"] = "a" * 40
+        self.check(data, False)
+
     def test_automatic_publication(self):
         data = copy.deepcopy(self.original)
         data["packages"]["yazi"]["auto_publish"] = True

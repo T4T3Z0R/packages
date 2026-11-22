@@ -10,6 +10,12 @@ MANIFEST = ROOT / "arch/packages/manifest.json"
 PACKAGE_NAME = re.compile(r"[a-z][a-z0-9-]*", re.ASCII)
 UPSTREAM = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", re.ASCII)
 STABLE_TAG = re.compile(r"v[0-9]+(?:[.][0-9]+){2}(?:[.][0-9]+)?", re.ASCII)
+COMMIT_SHA = re.compile(r"[0-9a-f]{40}", re.ASCII)
+
+STABLE_POLICIES = {"stable-tag", "pinned-tag"}
+COMMIT_POLICIES = {"development-commit", "pinned-commit"}
+SUPPORTED_POLICIES = STABLE_POLICIES | COMMIT_POLICIES
+
 
 REQUIRED_FIELDS = {
     "upstream", "source_ref", "release_policy",
@@ -44,11 +50,19 @@ def validate():
         if not UPSTREAM.fullmatch(config["upstream"]):
             raise ValueError(f"{name}: invalid upstream repository")
 
-        if config["release_policy"] != "stable-tag":
+        policy = config["release_policy"]
+        ref = config["source_ref"]
+
+        if policy not in SUPPORTED_POLICIES:
             raise ValueError(f"{name}: unsupported release policy")
 
-        if not STABLE_TAG.fullmatch(config["source_ref"]):
-            raise ValueError(f"{name}: invalid stable tag")
+        if policy in STABLE_POLICIES:
+            if not STABLE_TAG.fullmatch(ref):
+                raise ValueError(f"{name}: invalid stable tag")
+
+        if policy in COMMIT_POLICIES:
+            if not COMMIT_SHA.fullmatch(ref):
+                raise ValueError(f"{name}: invalid commit SHA")
 
         expected = f"arch/packages/{name}/PKGBUILD.in"
         if config["recipe"] != expected:
