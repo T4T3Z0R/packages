@@ -43,17 +43,64 @@ jobs:
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
 
+      - name: Load verified WezTerm source selection
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/verify_source_contract.py --package wezterm |
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print("PKGVER="+d["pkgver"]); print("PKGREL="+str(d["pkgrel"]))' >> "$GITHUB_ENV"
+
       - name: Verify pinned recipe
         run: |
           set -euo pipefail
           bash -n arch/wezterm/PKGBUILD
-          grep -Fxq \
-            '_commit=e1eae81a56be8b5487dc77a29616afa568fb57b7' \
-            arch/wezterm/PKGBUILD
-          grep -Fxq \
-            'pkgver=20240203.110809.5046fc22.r965.ge1eae81a5' \
-            arch/wezterm/PKGBUILD
-          grep -Fxq 'pkgrel=1' arch/wezterm/PKGBUILD
+          test -n "$PKGVER"
+          test -n "$PKGREL"
+          python3 scripts/package-pipeline/verify_source_contract.py --package wezterm
+
+      - name: Verify upstream Git-derived package version
+        run: |
+          set -euo pipefail
+
+          commit="$(
+            python3 scripts/package-pipeline/verify_source_contract.py --package wezterm |
+              python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["source_field"] == "_commit"; print(d["source_value"])'
+          )"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          test -n "$PKGVER"
+
+          tmp="$(mktemp -d)"
+          trap 'rm -rf -- "$tmp"' EXIT
+
+          mkdir -p "$tmp/wezterm"
+          git -C "$tmp/wezterm" init -q
+          git -C "$tmp/wezterm" remote add origin https://github.com/wezterm/wezterm.git
+
+          git -C "$tmp/wezterm" fetch --quiet \
+            --filter=blob:none \
+            --no-tags \
+            origin \
+            "$commit" \
+            '+refs/tags/20*:refs/tags/20*'
+
+          git -C "$tmp/wezterm" cat-file -e "${commit}^{commit}"
+          git -C "$tmp/wezterm" update-ref HEAD "$commit"
+          test "$(git -C "$tmp/wezterm" rev-parse HEAD)" = "$commit"
+
+          generated="$(
+            cd "$tmp"
+            source "$GITHUB_WORKSPACE/arch/wezterm/PKGBUILD"
+            pkgver
+          )"
+
+          printf 'Manifest pkgver: %s\n' "$PKGVER"
+          printf 'Generated pkgver: %s\n' "$generated"
+
+          if [[ "$generated" != "$PKGVER" ]]; then
+            echo 'FAIL: Upstream Git history does not match declared WezTerm version' >&2
+            exit 1
+          fi
+
+          echo 'PASS: WezTerm upstream Git-derived version verified'
 
       - name: Build both packages as unprivileged user
         run: |
@@ -85,10 +132,12 @@ jobs:
 
           main_file="${main[0]##*/}"
           debug_file="${debug[0]##*/}"
-          [[ "$main_file" == 'wezterm-20240203.110809.5046fc22.r965.ge1eae81a5-1-x86_64.pkg.tar.zst' ]]
-          [[ "$debug_file" == 'wezterm-debug-20240203.110809.5046fc22.r965.ge1eae81a5-1-x86_64.pkg.tar.zst' ]]
+          [[ "$main_file" == "wezterm-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst" ]]
+          [[ "$debug_file" == "wezterm-debug-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst" ]]
           bsdtar -xOf "${main[0]}" .PKGINFO | grep -Fxq 'pkgname = wezterm'
           bsdtar -xOf "${debug[0]}" .PKGINFO | grep -Fxq 'pkgname = wezterm-debug'
+          bsdtar -xOf "${main[0]}" .PKGINFO | grep -Fxq "pkgver = ${PKGVER}-${PKGREL}"
+          bsdtar -xOf "${debug[0]}" .PKGINFO | grep -Fxq "pkgver = ${PKGVER}-${PKGREL}"
 
           listing="$(mktemp)"
           trap 'rm -f "$listing"' EXIT
@@ -181,6 +230,12 @@ jobs:
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
 
+      - name: Load verified WezTerm source selection
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/verify_source_contract.py --package wezterm |
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print("PKGVER="+d["pkgver"]); print("PKGREL="+str(d["pkgrel"]))' >> "$GITHUB_ENV"
+
       - name: Trust checked-out repository
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
@@ -197,11 +252,13 @@ jobs:
           test -s validated/evidence/package-SHA256SUMS
           mapfile -t files < validated/evidence/package-names.txt
           (( ${#files[@]} == 2 ))
-          [[ "${files[0]}" == 'wezterm-20240203.110809.5046fc22.r965.ge1eae81a5-1-x86_64.pkg.tar.zst' ]]
-          [[ "${files[1]}" == 'wezterm-debug-20240203.110809.5046fc22.r965.ge1eae81a5-1-x86_64.pkg.tar.zst' ]]
+          [[ "${files[0]}" == "wezterm-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst" ]]
+          [[ "${files[1]}" == "wezterm-debug-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst" ]]
           (cd validated/candidate && sha256sum --check --strict ../evidence/package-SHA256SUMS)
           bsdtar -xOf "validated/candidate/${files[0]}" .PKGINFO | grep -Fxq 'pkgname = wezterm'
           bsdtar -xOf "validated/candidate/${files[1]}" .PKGINFO | grep -Fxq 'pkgname = wezterm-debug'
+          bsdtar -xOf "validated/candidate/${files[0]}" .PKGINFO | grep -Fxq "pkgver = ${PKGVER}-${PKGREL}"
+          bsdtar -xOf "validated/candidate/${files[1]}" .PKGINFO | grep -Fxq "pkgver = ${PKGVER}-${PKGREL}"
           mkdir -p package-output
           cp -- "validated/candidate/${files[0]}" "validated/candidate/${files[1]}" package-output/
           {
