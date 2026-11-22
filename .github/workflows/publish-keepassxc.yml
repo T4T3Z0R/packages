@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'arch/keepassxc/**'
+      - 'arch/packages/manifest.json'
       - 'arch/packages/retention.json'
       - '.github/workflows/publish-keepassxc.yml'
   workflow_dispatch:
@@ -33,7 +34,7 @@ jobs:
         run: |
           set -euo pipefail
           pacman -Syu --noconfirm --needed \
-            base-devel git gnupg libarchive botan glibc hicolor-icon-theme \
+            base-devel git python gnupg libarchive botan glibc hicolor-icon-theme \
             keyutils libgcc libstdc++ libusb libxi libxtst libx11 \
             minizip pcsclite qrencode qt6-base qt6-svg readline zlib \
             asciidoctor cmake qt6-tools xclip xorg-server-xvfb xorg-xauth \
@@ -42,13 +43,17 @@ jobs:
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
 
+      - name: Load verified KeePassXC source selection
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/verify_source_contract.py --package keepassxc |
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print("PKGVER="+d["source_value"]); print("PKGREL="+str(d["pkgrel"]))' >> "$GITHUB_ENV"
+
       - name: Verify pinned recipe, patch and upstream key material
         run: |
           set -euo pipefail
           bash -n arch/keepassxc/PKGBUILD
           grep -Fxq 'pkgname=keepassxc' arch/keepassxc/PKGBUILD
-          grep -Fxq 'pkgver=2.8.0' arch/keepassxc/PKGBUILD
-          grep -Fxq 'pkgrel=4' arch/keepassxc/PKGBUILD
           grep -Fq '#tag=${pkgver}?signed' arch/keepassxc/PKGBUILD
           printf '%s  %s\n' \
             'c52b2627a7f7d679e572ee17416d3500b80dd2cccebd6f996b0f65186e2ea107' \
@@ -83,7 +88,7 @@ jobs:
           archives=(arch/keepassxc/*.pkg.tar.zst)
           (( ${#archives[@]} == 1 || ${#archives[@]} == 2 ))
           names=(keepassxc)
-          if [[ -f arch/keepassxc/keepassxc-debug-2.8.0-4-x86_64.pkg.tar.zst ]]; then
+          if [[ -f arch/keepassxc/keepassxc-debug-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst ]]; then
             names+=(keepassxc-debug)
           fi
           (( ${#names[@]} == ${#archives[@]} ))
@@ -91,7 +96,7 @@ jobs:
           mkdir -p candidate evidence
           : > evidence/package-names.txt
           for name in "${names[@]}"; do
-            file="${name}-2.8.0-4-x86_64.pkg.tar.zst"
+            file="${name}-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst"
             source="arch/keepassxc/$file"
             test -s "$source"
             bsdtar -xOf "$source" .PKGINFO | grep -Fxq "pkgname = $name"
@@ -102,7 +107,7 @@ jobs:
             test -f "candidate/${archive##*/}"
           done
 
-          main=candidate/keepassxc-2.8.0-4-x86_64.pkg.tar.zst
+          main=candidate/keepassxc-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst
           listing="$(mktemp)"
           trap 'rm -f "$listing"' EXIT
           bsdtar -tf "$main" | sed 's#^\./##' > "$listing"
@@ -183,6 +188,12 @@ jobs:
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
 
+      - name: Load verified KeePassXC source selection
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/verify_source_contract.py --package keepassxc |
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print("PKGVER="+d["source_value"]); print("PKGREL="+str(d["pkgrel"]))' >> "$GITHUB_ENV"
+
       - name: Trust checked-out repository
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
@@ -202,7 +213,7 @@ jobs:
           expected=(keepassxc)
           if (( ${#files[@]} == 2 )); then expected+=(keepassxc-debug); fi
           for i in "${!files[@]}"; do
-            [[ "${files[i]}" == "${expected[i]}-2.8.0-4-x86_64.pkg.tar.zst" ]]
+            [[ "${files[i]}" == "${expected[i]}-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst" ]]
           done
           (cd validated/candidate && sha256sum --check --strict ../evidence/package-SHA256SUMS)
           mapfile -t actual < <(find validated/candidate -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
