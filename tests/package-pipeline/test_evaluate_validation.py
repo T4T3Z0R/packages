@@ -36,6 +36,7 @@ def api_with_runs(runs, *, valid_artifact=True):
                 "total_count": 3,
                 "jobs": [
                     {
+                        "id": 1,
                         "name": "Build and validate unsigned WezTerm pair",
                         "conclusion": "success",
                         "steps": [{
@@ -44,10 +45,12 @@ def api_with_runs(runs, *, valid_artifact=True):
                         }],
                     },
                     {
+                        "id": 2,
                         "name": "Notify signing approval ready",
                         "conclusion": "skipped",
                     },
                     {
+                        "id": 3,
                         "name": "Sign and publish approved WezTerm pair",
                         "conclusion": "skipped",
                     },
@@ -57,6 +60,7 @@ def api_with_runs(runs, *, valid_artifact=True):
             return {
                 "total_count": 1 if valid_artifact else 0,
                 "artifacts": [{
+                    "id": 4,
                     "name": "wezterm-123-1-candidate",
                     "expired": False,
                     "size_in_bytes": 100,

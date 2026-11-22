@@ -27,6 +27,7 @@ def github_api(endpoint):
 def fetch_pages(api, endpoint, collection):
     """Retrieve a complete GitHub collection, rejecting partial data."""
     items = []
+    seen_ids = set()
     expected_count = None
 
     for page in range(1, MAX_PAGES + 1):
@@ -58,6 +59,23 @@ def fetch_pages(api, endpoint, collection):
 
         if len(batch) > PER_PAGE:
             raise ValueError("Oversized GitHub API page")
+
+        # GitHub pages are not an atomic snapshot. Detect
+        # overlapping records even when total_count is unchanged.
+        for item in batch:
+            if not isinstance(item, dict):
+                raise ValueError("Malformed GitHub collection item")
+
+            identity = item.get("id")
+            if type(identity) is not int or identity <= 0:
+                raise ValueError("Missing GitHub item identity")
+
+            if identity in seen_ids:
+                raise ValueError(
+                    "Overlapping GitHub pagination records"
+                )
+
+            seen_ids.add(identity)
 
         items.extend(batch)
 

@@ -45,11 +45,11 @@ class HistoryReaderTests(unittest.TestCase):
             if "&page=1" in url:
                 return {
                     "total_count": 101,
-                    "jobs": [{"id": i} for i in range(100)],
+                    "jobs": [{"id": i + 1} for i in range(100)],
                 }
             return {
                 "total_count": 101,
-                "jobs": [{"id": 100}],
+                "jobs": [{"id": 101}],
             }
 
         result = fetch_pages(api, "example", "jobs")
@@ -59,8 +59,41 @@ class HistoryReaderTests(unittest.TestCase):
         self.assertTrue(calls[1].endswith("&page=2"))
         self.assertEqual(
             [item["id"] for item in result],
-            list(range(101)),
+            list(range(1, 102)),
         )
+
+    def test_overlapping_pages_rejected(self):
+        def api(url):
+            if url.endswith("&page=1"):
+                return {
+                    "total_count": 101,
+                    "jobs": [
+                        {"id": i + 1} for i in range(100)
+                    ],
+                }
+
+            return {
+                "total_count": 101,
+                "jobs": [{"id": 100}],
+            }
+
+        with self.assertRaisesRegex(
+            ValueError, "Overlapping"
+        ):
+            fetch_pages(api, "example", "jobs")
+
+    def test_missing_record_identity_rejected(self):
+        with self.assertRaisesRegex(
+            ValueError, "identity"
+        ):
+            fetch_pages(
+                lambda url: {
+                    "total_count": 1,
+                    "jobs": [{}],
+                },
+                "example",
+                "jobs",
+            )
 
     def test_truncated_page_rejected(self):
         with self.assertRaises(ValueError):
@@ -78,7 +111,7 @@ class HistoryReaderTests(unittest.TestCase):
             if "&page=1" in url:
                 return {
                     "total_count": 101,
-                    "jobs": [{} for _ in range(100)],
+                    "jobs": [{"id": i + 1} for i in range(100)],
                 }
             return {
                 "total_count": 102,
@@ -137,11 +170,11 @@ class HistoryReaderTests(unittest.TestCase):
         def api(url):
             calls.append(url)
             if "/jobs?" in url:
-                return {"total_count": 1, "jobs": [{}]}
+                return {"total_count": 1, "jobs": [{"id": 1}]}
             if "/artifacts?" in url:
                 return {
                     "total_count": 1,
-                    "artifacts": [{}],
+                    "artifacts": [{"id": 2}],
                 }
             raise AssertionError(url)
 
