@@ -11,7 +11,7 @@ FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
 VALIDATION_JOBS = {
     "ghostty": "Build and validate unsigned Ghostty split packages",
     "keepassxc": "Build and validate unsigned KeePassXC",
-    "syncthing": "Build and validate unsigned Syncthing split packages",
+    "syncthing": "Build and validate unsigned Syncthing",
     "wezterm": "Build and validate unsigned WezTerm pair",
 }
 

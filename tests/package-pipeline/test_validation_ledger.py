@@ -64,6 +64,40 @@ class LedgerTests(unittest.TestCase):
     def test_validated(self):
         self.assertEqual(self.classify(), "validated")
 
+    def test_syncthing_real_job_name(self):
+        run, jobs, artifacts = evidence()
+
+        jobs[0]["name"] = "Build and validate unsigned Syncthing"
+        artifacts[0]["name"] = (
+            "syncthing-44989886912-1-candidate"
+        )
+
+        result = classify(
+            run,
+            jobs,
+            artifacts,
+            package="syncthing",
+            target=FP,
+            fingerprint=lambda sha, package: FP,
+        )
+
+        self.assertEqual(result, "validated")
+
+    def test_validation_job_names_match_workflows(self):
+        from validation_ledger import VALIDATION_JOBS
+
+        for package, expected in VALIDATION_JOBS.items():
+            workflow = (
+                ROOT / ".github/workflows"
+                / f"publish-{package}.yml"
+            ).read_text()
+
+            with self.subTest(package=package):
+                self.assertIn(
+                    f"name: {expected}",
+                    workflow,
+                )
+
     def test_different_fingerprint(self):
         self.assertEqual(
             self.classify(historical=OTHER), "unrelated"
