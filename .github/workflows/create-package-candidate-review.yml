@@ -1,0 +1,168 @@
+name: Create package candidate review issue
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Approved package requiring review
+        required: true
+        type: choice
+        options:
+          - ghostty
+          - keepassxc
+          - syncthing
+          - wezterm
+      candidate:
+        description: Exact current upstream tag or commit
+        required: true
+        type: string
+      confirmation:
+        description: Type CREATE REVIEW ISSUE exactly
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-candidate-issue-writes
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  create-review:
+    name: Create or reuse one candidate review issue
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+    container:
+      image: archlinux:latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Verify explicit owner authorization
+        env:
+          REQUESTED_CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = T4T3Z0R/packages
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_ACTOR" = T4T3Z0R
+          test "$GITHUB_TRIGGERING_ACTOR" = T4T3Z0R
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$REQUESTED_CONFIRMATION" = 'CREATE REVIEW ISSUE'
+
+      - name: Install discovery dependencies
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed python git github-cli
+          command -v vercmp
+
+      - name: Checkout default-branch source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Verify checkout and package manifest
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 scripts/package-pipeline/validate_manifest.py
+
+      - name: Discover and select exact candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_PACKAGE: ${{ inputs.package }}
+          REQUESTED_CANDIDATE: ${{ inputs.candidate }}
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/report_upstream.py |
+            tee upstream-report.json
+          python3 scripts/package-pipeline/select_candidate_write.py \
+            upstream-report.json \
+            --package "$REQUESTED_PACKAGE" \
+            --candidate "$REQUESTED_CANDIDATE" \
+            > selected-report.json
+          python3 scripts/package-pipeline/run_candidate_reviews.py \
+            selected-report.json | tee prewrite-review.json
+
+      - name: Create missing candidate review once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_ISSUE_WRITE_ENABLED: "1"
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/run_candidate_reviews.py \
+            selected-report.json --create | tee issue-write-result.json
+
+      - name: Verify issue history after write
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/run_candidate_reviews.py \
+            selected-report.json | tee postwrite-review.json
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          def load(filename):
+              content = json.loads(Path(filename).read_text())
+              assert isinstance(content, list) and len(content) == 1
+              return content[0]
+
+          before = load("prewrite-review.json")
+          write = load("issue-write-result.json")
+          after = load("postwrite-review.json")
+
+          assert before["package"] == write["package"] == after["package"]
+          assert before["candidate"] == write["candidate"] == after["candidate"]
+          assert write["action"] in ("created", "existing")
+          assert type(write["issue_number"]) is int
+          assert write["issue_number"] > 0
+          assert after["issue_number"] == write["issue_number"]
+
+          if write["action"] == "created":
+              assert before["action"] == "create"
+              assert after["action"] == "pending"
+          else:
+              assert after["action"] == write["decision"]
+              if before["action"] != "create":
+                  assert before["issue_number"] == write["issue_number"]
+
+          summary = (
+              "## Manual package candidate review\n\n"
+              f"Package: `{write['package']}`\n\n"
+              f"Candidate: `{write['candidate']}`\n\n"
+              f"Result: **{write['action']}**\n\n"
+              f"Issue: #{write['issue_number']}\n\n"
+              "No source selection, builds, signing, or publication.\n"
+          )
+
+          with open(
+              os.environ["GITHUB_STEP_SUMMARY"],
+              "a",
+              encoding="utf-8",
+          ) as output:
+              output.write(summary)
+
+          print(summary)
+          PY
+
+      - name: Upload review evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-review-write-${{ github.run_id }}
+          path: |
+            upstream-report.json
+            selected-report.json
+            prewrite-review.json
+            issue-write-result.json
+            postwrite-review.json
+          if-no-files-found: error
+          retention-days: 7

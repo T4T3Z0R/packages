@@ -12,6 +12,7 @@ on:
       - "arch/packages/**"
       - ".github/workflows/test-package-pipeline.yml"
       - ".github/workflows/check-package-upstream.yml"
+      - ".github/workflows/create-package-candidate-review.yml"
       - ".github/workflows/publish-noctalia-greeter.yml"
       - ".github/workflows/publish-noctalia-custom.yml"
       - ".github/workflows/publish-gameshell.yml"
@@ -26,6 +27,7 @@ on:
       - "arch/packages/**"
       - ".github/workflows/test-package-pipeline.yml"
       - ".github/workflows/check-package-upstream.yml"
+      - ".github/workflows/create-package-candidate-review.yml"
       - ".github/workflows/publish-noctalia-greeter.yml"
       - ".github/workflows/publish-noctalia-custom.yml"
       - ".github/workflows/publish-gameshell.yml"
@@ -92,6 +94,8 @@ jobs:
           python -m unittest discover -s tests/package-pipeline -p 'test_create_candidate_issue.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_github_candidate_writer.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_run_candidate_reviews.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_select_candidate_write.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_candidate_write_workflow.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_source_contract.py' -v
           for package in ghostty keepassxc syncthing wezterm; do
             python scripts/package-pipeline/verify_source_contract.py --package "$package"
