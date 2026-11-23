@@ -122,7 +122,8 @@ class DispatchTests(unittest.TestCase):
         self.assertIn('false)', source)
         self.assertIn('update=true', source)
         self.assertIn('if [[ "$package_exists" == true ]]', source)
-        self.assertIn('github.event_name == \'schedule\'', source)
+        self.assertIn('github.event_name == \'workflow_dispatch\'', source)
+        self.assertNotIn('github.event_name == \'schedule\'', source)
 
     def test_dispatch_permission_separate_from_read_only_verifier(self):
         workflow = (ROOT / '.github/workflows/package-validation-controller.yml').read_text()
