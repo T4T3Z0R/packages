@@ -1,0 +1,52 @@
+name: Review package candidate approval
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  evaluate:
+    name: Verify candidate approval event
+    if: >-
+      github.event.label.name == 'candidate:approved' &&
+      github.actor == 'T4T3Z0R'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout production source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Verify event authorization
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$GITHUB_EVENT_NAME" = issues
+          test "$GITHUB_REPOSITORY" = T4T3Z0R/packages
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_ACTOR" = T4T3Z0R
+          test "$GITHUB_TRIGGERING_ACTOR" = T4T3Z0R
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Evaluate approved candidate without writes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 scripts/package-pipeline/candidate_approval_event.py \
+            "$GITHUB_EVENT_PATH" | tee approval-plan.json
+
+          {
+            echo '## Candidate approval verified'
+            echo
+            echo 'Source-selection review is required before validation.'
+            echo
+            echo 'No workflows dispatched; no signing or publication.'
+          } >> "$GITHUB_STEP_SUMMARY"
