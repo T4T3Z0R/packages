@@ -153,7 +153,7 @@ class SevenPackageValidation(unittest.TestCase):
                 jobs[0]["steps"][0]["conclusion"] = "success"
                 jobs[1]["conclusion"] = "success"
                 self.assertEqual(classify(run, jobs, artifacts, **kwargs),
-                                 "retry")
+                                 "manual_review")
 
 if __name__ == "__main__":
     unittest.main()

@@ -27,7 +27,7 @@ concurrency:
 jobs:
   controller:
     if: github.event_name == 'workflow_dispatch'
-    name: Evaluate unsigned package validation
+    name: Evaluate package release history
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -221,7 +221,7 @@ jobs:
           ]
           if result['decision'] == 'review_validation':
               lines.insert(3, f"Package: `{result['package']}`")
-              lines.insert(4, f"Unsigned workflow: `{result['workflow']}`")
+              lines.insert(4, f"Approval workflow: `{result['workflow']}`")
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as out:
               out.write('\n'.join(lines) + '\n')
           PYTHON
@@ -244,8 +244,8 @@ jobs:
               print(f'decision={decision}', file=out)
           PYTHON
 
-  dispatch-unsigned-validation:
-    name: Dispatch exact unsigned validation if needed
+  dispatch-release-approval:
+    name: Request protected signing approval if needed
     needs: verify-merged-selection
     if: >-
       github.event_name == 'push' &&

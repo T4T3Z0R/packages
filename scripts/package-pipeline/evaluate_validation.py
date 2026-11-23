@@ -81,6 +81,8 @@ def evaluate(api, repo, package, target, historical):
     seen = set()
     active = []
     validated = []
+    published = []
+    manual_review = []
 
     for run in runs:
         if not isinstance(run, dict):
@@ -116,9 +118,6 @@ def evaluate(api, repo, package, target, historical):
             active.append(run_id)
             continue
 
-        if run.get("conclusion") != "success":
-            continue
-
         jobs, artifacts = run_evidence(api, repo, run_id)
 
         result = classify(
@@ -134,6 +133,10 @@ def evaluate(api, repo, package, target, historical):
 
         if result == "validated":
             validated.append(run_id)
+        elif result == "published":
+            published.append(run_id)
+        elif result == "manual_review":
+            manual_review.append(run_id)
         elif result not in ("retry", "unrelated"):
             raise ValueError(
                 "Unexpected completed-run classification"
@@ -141,6 +144,10 @@ def evaluate(api, repo, package, target, historical):
 
     if active:
         decision = "in_flight"
+    elif manual_review:
+        decision = "manual_review"
+    elif published:
+        decision = "published"
     elif validated:
         decision = "validated"
     else:
@@ -150,6 +157,8 @@ def evaluate(api, repo, package, target, historical):
         "package": package,
         "decision": decision,
         "validated_runs": validated,
+        "published_runs": published,
+        "manual_review_runs": manual_review,
         "active_runs": active,
         "history_count": len(runs),
     }

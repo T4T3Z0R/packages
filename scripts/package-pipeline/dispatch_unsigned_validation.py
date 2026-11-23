@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Dispatch an explicitly unsigned validation after fresh owner-merge review.
+"""Request protected signing approval after fresh owner-merge review.
 
-Only a successful full-history decision of needs_validation may dispatch.
-Never signs, publishes, or changes manifest/issue/PR state.
+Only a verified owner-approved merge may request protected signing approval.
+Dispatch cannot grant signing approval or publish packages.
 """
 
 import argparse
@@ -16,6 +16,7 @@ from pathlib import Path
 from evaluate_validation import REPOSITORY, evaluate, historical_identity
 from github_validation_history import github_api
 from package_fingerprint import fingerprint
+from release_approval_policy import verify as verify_approval_policy
 from select_package_validation import SUPPORTED, TEMPLATE_PACKAGES, workflow_file
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
@@ -81,17 +82,19 @@ def request(plan, manifest, paths, history_decision):
     require(plan.get('inputs') == expected,
             'Merged approval contains unexpected publisher inputs')
 
-    require(history_decision in ('needs_validation', 'in_flight', 'validated'),
+    require(history_decision in ('needs_validation', 'in_flight',
+                                 'validated', 'published', 'manual_review'),
             'Unknown or incomplete validation ledger decision')
     result = {'package': package, 'revision': revision,
               'workflow': workflow_file(package),
               'validation_decision': history_decision,
               'dispatch_requested': False}
-    if history_decision != 'needs_validation':
+    if history_decision in ('in_flight', 'published', 'manual_review'):
         return result
 
-    # The publisher input is explicitly false, never left to defaults.
-    payload = {'ref': 'main', 'inputs': {'publish': 'false',
+    # This requests the existing protected environment's approval.
+    # It does not approve signing or provide signing secrets.
+    payload = {'ref': 'main', 'inputs': {'publish': 'true',
                'expected_revision': revision}}
     for key, value in expected.items():
         if key != 'publish':
@@ -173,6 +176,12 @@ def main():
     require(read_main_sha() == revision,
             'Production main moved before dispatch')
 
+    # Refuse automated approval requests if the live signing gate
+    # differs from the required owner-only protection policy.
+    verify_approval_policy(github_api)
+    require(read_main_sha() == revision,
+            'Production main moved after signing policy review')
+
     subprocess.run(
         ['gh', 'api', '--method', 'POST',
          f'repos/{REPOSITORY}/actions/workflows/{result["workflow"]}/dispatches',
@@ -184,11 +193,11 @@ def main():
     summary = os.environ.get('GITHUB_STEP_SUMMARY')
     if summary:
         with open(summary, 'a', encoding='utf-8') as f:
-            f.write('## Guarded unsigned validation dispatch\n\n')
+            f.write('## Guarded protected release-approval request\n\n')
             f.write(f'Package: `{package}`\n\n')
             f.write(f'Revision: `{revision}`\n\n')
             f.write(f'Workflow: `{result["workflow"]}`\n\n')
-            f.write('Requested `publish: false`. No signing or publication.\n')
+            f.write('Requested `publish: true`. Human signing approval remains required.\n')
 
 
 if __name__ == '__main__':

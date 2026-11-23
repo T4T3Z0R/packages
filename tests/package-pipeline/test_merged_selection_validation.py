@@ -227,7 +227,7 @@ class MergedSelectionTests(unittest.TestCase):
         self.assertIn("name: Verify merged source selection", s)
         self.assertIn("pull-requests: read", s)
         self.assertIn("issues: read", s)
-        reader = s.split("\n  dispatch-unsigned-validation:", 1)[0]
+        reader = s.split("\n  dispatch-release-approval:", 1)[0]
         self.assertNotIn("actions: write", reader)
         self.assertNotIn("contents: write", s)
         self.assertNotIn("gh workflow run", s)
