@@ -3,6 +3,11 @@ name: Publish Ghostty
 on:
   workflow_dispatch:
     inputs:
+      expected_revision:
+        description: Exact infrastructure commit expected for unsigned validation
+        type: string
+        required: false
+        default: ""
       publish:
         description: 'Request protected signing and publication after validation'
         type: boolean
@@ -39,6 +44,15 @@ jobs:
 
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
+
+      - name: Verify requested infrastructure revision
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_revision != '' }}
+        env:
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_REVISION"
 
       - name: Load verified Ghostty source selection
         run: |

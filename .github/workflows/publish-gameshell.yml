@@ -13,6 +13,11 @@ on:
         required: true
         default: latest
         type: string
+      expected_revision:
+        description: Exact infrastructure commit expected for unsigned validation
+        type: string
+        required: false
+        default: ""
       publish:
         description: Request protected signing and publication after validation
         required: false
@@ -49,6 +54,15 @@ jobs:
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
 
+      - name: Verify requested infrastructure revision
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_revision != '' }}
+        env:
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_REVISION"
+
       - name: Checkout upstream GameShell
         uses: actions/checkout@v6
         with:
@@ -62,6 +76,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || 'latest' }}
+          REQUESTED_PUBLISH: ${{ inputs.publish }}
         run: |
           set -euo pipefail
 
@@ -139,6 +154,24 @@ jobs:
                 exit 1
               fi
               update=true
+              ;;
+            workflow_dispatch)
+              case "$REQUESTED_PUBLISH" in
+                false)
+                  # An unsigned validation is meaningful even when the
+                  # identical package version has already been published.
+                  update=true
+                  ;;
+                true)
+                  # Preserve the existing publication collision behavior.
+                  if [[ "$package_exists" == true ]]; then
+                    update=false
+                  else
+                    update=true
+                  fi
+                  ;;
+                *) echo 'Invalid publish intent' >&2; exit 1 ;;
+              esac
               ;;
             *)
               if [[ "$package_exists" == true ]]; then
