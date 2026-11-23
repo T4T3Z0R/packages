@@ -27,6 +27,10 @@ PER_PAGE = 100
 MAX_PAGES = 100
 
 
+BOOTSTRAP_BASE = frozenset(('ghostty', 'keepassxc', 'syncthing', 'wezterm', 'yazi'))
+BOOTSTRAP_PACKAGES = {'noctalia-custom': {'upstream': 'T4T3Z0R/noctalia', 'source_ref': '0a0dd757fe685b0ec7aa56943e3a9bd15a1d2df2', 'release_policy': 'reviewed-commit', 'tracking_ref': 'refs/heads/custom', 'license': 'MIT AND Apache-2.0', 'recipe': 'arch/noctalia-custom/PKGBUILD.in', 'status': 'approved', 'auto_publish': False}, 'noctalia-greeter-t4t3z0r': {'upstream': 'noctalia-dev/noctalia-greeter', 'source_ref': 'v1.7.1', 'release_policy': 'stable-git-tag', 'license': 'MIT', 'recipe': 'arch/noctalia-greeter-t4t3z0r/PKGBUILD.in', 'status': 'approved', 'auto_publish': False}, 'gameshell': {'upstream': 'phyver/GameShell', 'source_ref': '63ae30982cf28ec7de1a4de23b85d15eccc031d8', 'release_policy': 'development-commit', 'tracking_ref': 'refs/tags/latest', 'license': 'GPL-3.0-only', 'recipe': 'arch/gameshell/PKGBUILD.in', 'status': 'approved', 'auto_publish': False}}
+
+
 def require(ok, message):
     if not ok:
         raise ValueError(message)
@@ -61,7 +65,19 @@ def changed_source(before, after):
     old, new = before.get("packages"), after.get("packages")
     require(isinstance(old, dict) and isinstance(new, dict),
             "Missing package mapping")
-    require(set(old) == set(new), "Package registry changed with selection")
+    if set(old) != set(new):
+        # This is the one-time seven-package migration, not a
+        # reviewed source selection. Never dispatch a build here.
+        require(set(old) == BOOTSTRAP_BASE,
+                "Unexpected bootstrap baseline")
+        require(set(new) == BOOTSTRAP_BASE | set(BOOTSTRAP_PACKAGES),
+                "Unexpected package registry expansion")
+        require(all(old[name] == new[name] for name in old),
+                "Existing package modified during bootstrap")
+        require(all(new[name] == config for name, config
+                    in BOOTSTRAP_PACKAGES.items()),
+                "Bootstrap package configuration changed")
+        return None
     differences = []
     for package in new:
         a, b = old[package], new[package]
@@ -140,7 +156,12 @@ def plan(event, before, after, pulls, issue=None, history=None):
 
     change = changed_source(before, after)
     if change is None:
-        return {"decision": "no_source_change", "revision": revision,
+        decision = (
+            "bootstrap_registry_expansion"
+            if set(before["packages"]) != set(after["packages"])
+            else "no_source_change"
+        )
+        return {"decision": decision, "revision": revision,
                 "validation_dispatched": False, "publication_authorized": False}
     package, old_ref, new_ref, config = change
 

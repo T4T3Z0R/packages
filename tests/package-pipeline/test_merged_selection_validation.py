@@ -1,4 +1,5 @@
 import copy
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -78,6 +79,67 @@ class MergedSelectionTests(unittest.TestCase):
                 self.assertEqual(result["inputs"], inputs)
                 self.assertFalse(result["validation_dispatched"])
                 self.assertFalse(result["publication_authorized"])
+
+    def test_exact_bootstrap_does_not_dispatch(self):
+        after = json.loads(
+            (ROOT / "arch/packages/manifest.json").read_text()
+        )
+        before = copy.deepcopy(after)
+        for name in (
+            "noctalia-custom",
+            "noctalia-greeter-t4t3z0r",
+            "gameshell",
+        ):
+            before["packages"].pop(name)
+
+        event = fixture()[0]
+        result = plan(event, before, after, [])
+
+        self.assertEqual(
+            result["decision"], "bootstrap_registry_expansion"
+        )
+        self.assertFalse(result["validation_dispatched"])
+        self.assertFalse(result["publication_authorized"])
+
+    def test_bootstrap_changes_fail_closed(self):
+        after = json.loads(
+            (ROOT / "arch/packages/manifest.json").read_text()
+        )
+        before = copy.deepcopy(after)
+        for name in (
+            "noctalia-custom",
+            "noctalia-greeter-t4t3z0r",
+            "gameshell",
+        ):
+            before["packages"].pop(name)
+
+        changes = (
+            lambda m: m["packages"]["gameshell"].update(
+                source_ref="f" * 40
+            ),
+            lambda m: m["packages"]["gameshell"].update(
+                auto_publish=True
+            ),
+            lambda m: m["packages"]["ghostty"].update(
+                source_ref="v0.0.0"
+            ),
+            lambda m: m["packages"].pop("noctalia-custom"),
+            lambda m: m["packages"].update(
+                unexpected={"status": "approved"}
+            ),
+        )
+
+        for index, change in enumerate(changes):
+            with self.subTest(case=index):
+                modified = copy.deepcopy(after)
+                change(modified)
+                with self.assertRaises(ValueError):
+                    changed_source(before, modified)
+
+        incomplete = copy.deepcopy(before)
+        incomplete["packages"].pop("wezterm")
+        with self.assertRaises(ValueError):
+            changed_source(incomplete, after)
 
     def test_no_source_change_is_noop(self):
         args = fixture()

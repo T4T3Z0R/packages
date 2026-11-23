@@ -238,7 +238,7 @@ jobs:
 
           result = json.loads(Path('merged-selection-plan.json').read_text())
           decision = result.get('decision')
-          if decision not in ('review_validation', 'no_source_change'):
+          if decision not in ('review_validation', 'no_source_change', 'bootstrap_registry_expansion'):
               raise ValueError('Unexpected merge-verification decision')
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
               print(f'decision={decision}', file=out)
