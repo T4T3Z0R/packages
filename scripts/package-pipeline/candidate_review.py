@@ -9,7 +9,7 @@ import json
 import re
 from pathlib import Path
 
-from select_package_validation import SUPPORTED
+from discover_upstream import DEFAULT_MANIFEST
 
 REF = re.compile(r"[A-Za-z0-9._+-]{1,100}\Z")
 
@@ -17,6 +17,10 @@ REF = re.compile(r"[A-Za-z0-9._+-]{1,100}\Z")
 def plan(results):
     if not isinstance(results, list):
         raise ValueError("Expected upstream report list")
+
+    registry = json.loads(
+        DEFAULT_MANIFEST.read_text()
+    )["packages"]
 
     proposals = []
     seen = set()
@@ -26,7 +30,10 @@ def plan(results):
             raise ValueError("Malformed upstream result")
 
         package = item.get("package")
-        if package not in SUPPORTED:
+        if (
+            package not in registry
+            or registry[package]["status"] != "approved"
+        ):
             raise ValueError("Unsupported package")
 
         if package in seen:

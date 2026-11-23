@@ -30,6 +30,16 @@ class CandidateReviewTests(unittest.TestCase):
         self.assertIn("Postpone", result[0]["body"])
         self.assertIn("Pin", result[0]["body"])
 
+    def test_migrated_packages_registered(self):
+        for name in (
+            "gameshell",
+            "noctalia-custom",
+            "noctalia-greeter-t4t3z0r",
+        ):
+            with self.subTest(package=name):
+                result = plan([candidate(package=name)])
+                self.assertEqual(result[0]["package"], name)
+
     def test_unchanged_skipped(self):
         self.assertEqual(
             plan([candidate(status="unchanged")]), []

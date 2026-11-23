@@ -6,11 +6,24 @@ import json
 from pathlib import Path
 
 from candidate_review import REF, plan
-from select_package_validation import SUPPORTED
+from discover_upstream import DEFAULT_MANIFEST
 
 
 def select(report, package, candidate):
-    if not isinstance(package, str) or package not in SUPPORTED:
+    if not isinstance(package, str):
+        raise ValueError("Unsupported requested package")
+
+    registry = json.loads(
+        DEFAULT_MANIFEST.read_text()
+    )["packages"]
+
+    config = registry.get(package)
+
+    if (
+        not isinstance(config, dict)
+        or config.get("status") != "approved"
+        or config.get("auto_publish") is not False
+    ):
         raise ValueError("Unsupported requested package")
     if not isinstance(candidate, str) or not REF.fullmatch(candidate):
         raise ValueError("Invalid requested candidate")

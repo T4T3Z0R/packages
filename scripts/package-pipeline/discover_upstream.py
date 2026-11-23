@@ -15,6 +15,9 @@ DEFAULT_MANIFEST = ROOT / "arch/packages/manifest.json"
 UPSTREAM = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 STABLE_TAG = re.compile(r"(?:v)?[0-9]+(?:\.[0-9]+){2}(?:\.[0-9]+)?\Z")
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
+TRACKED_REF = re.compile(
+    r"refs/(?:heads|tags)/[A-Za-z0-9][A-Za-z0-9._/-]*\Z"
+)
 
 
 def fetch_json(url):
@@ -97,16 +100,52 @@ def discover(name, config, fetch=fetch_json):
             key=lambda tag: (version_key(tag), tag),
         )
         channel = "stable-git-tag"
-    elif policy == "development-commit":
-        repository = fetch(base)
-        branch = repository.get("default_branch")
-        if not isinstance(branch, str) or not branch:
-            raise ValueError(f"{name}: missing default branch")
-        commit = fetch(f"{base}/commits/{quote(branch, safe='')}")
-        candidate = commit.get("sha")
-        if not isinstance(candidate, str) or not COMMIT_SHA.fullmatch(candidate):
+    elif policy in ("development-commit", "reviewed-commit"):
+        tracking = config.get("tracking_ref")
+
+        if tracking is None:
+            repository = fetch(base)
+            branch = repository.get("default_branch")
+            if not isinstance(branch, str) or not branch:
+                raise ValueError(f"{name}: missing default branch")
+            commit = fetch(
+                f"{base}/commits/{quote(branch, safe='')}"
+            )
+            candidate = commit.get("sha")
+            channel = "default-branch"
+        else:
+            if (
+                not isinstance(tracking, str)
+                or not TRACKED_REF.fullmatch(tracking)
+                or ".." in tracking
+                or "//" in tracking
+                or tracking.endswith("/")
+            ):
+                raise ValueError(f"{name}: invalid tracking reference")
+
+            ref_path = quote(
+                tracking.removeprefix("refs/"), safe="/"
+            )
+            ref = fetch(f"{base}/git/ref/{ref_path}")
+
+            if (
+                not isinstance(ref, dict)
+                or ref.get("ref") != tracking
+                or not isinstance(ref.get("object"), dict)
+                or ref["object"].get("type") != "commit"
+            ):
+                raise ValueError(
+                    f"{name}: tracking reference is not a direct commit"
+                )
+
+            candidate = ref["object"].get("sha")
+            channel = "tracked-ref"
+
+        if (
+            not isinstance(candidate, str)
+            or not COMMIT_SHA.fullmatch(candidate)
+        ):
             raise ValueError(f"{name}: invalid upstream commit SHA")
-        channel = "default-branch"
     else:
         raise ValueError(f"{name}: unsupported discovery policy")
 

@@ -123,6 +123,51 @@ class DiscoveryTests(unittest.TestCase):
             "https://api.github.com/repos/example/project/commits/main",
         )
 
+    def test_explicit_branch_tracking(self):
+        config = self.config("reviewed-commit", "a" * 40)
+        config["tracking_ref"] = "refs/heads/custom"
+        calls = []
+
+        def fetch(url):
+            calls.append(url)
+            return {
+                "ref": "refs/heads/custom",
+                "object": {"type": "commit", "sha": "b" * 40},
+            }
+
+        result = discovery.discover("custom", config, fetch)
+        self.assertEqual(result["candidate"], "b" * 40)
+        self.assertEqual(result["channel"], "tracked-ref")
+        self.assertEqual(calls, [
+            "https://api.github.com/repos/"
+            "example/project/git/ref/heads/custom"
+        ])
+
+    def test_moving_tag_tracking(self):
+        config = self.config("development-commit", "a" * 40)
+        config["tracking_ref"] = "refs/tags/latest"
+
+        result = discovery.discover(
+            "gameshell", config,
+            lambda url: {
+                "ref": "refs/tags/latest",
+                "object": {"type": "commit", "sha": "b" * 40},
+            },
+        )
+        self.assertEqual(result["candidate"], "b" * 40)
+
+    def test_noncommit_tracking_ref_fails_closed(self):
+        config = self.config("development-commit", "a" * 40)
+        config["tracking_ref"] = "refs/tags/latest"
+        with self.assertRaises(ValueError):
+            discovery.discover(
+                "gameshell", config,
+                lambda url: {
+                    "ref": "refs/tags/latest",
+                    "object": {"type": "tag", "sha": "b" * 40},
+                },
+            )
+
     def test_development_invalid_sha(self):
         def fetch(url):
             if url.endswith("/example/project"):

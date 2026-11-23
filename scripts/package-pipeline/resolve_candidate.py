@@ -13,7 +13,7 @@ STABLE_TAG = re.compile(
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 STABLE_POLICIES = {"stable-tag", "stable-git-tag", "pinned-tag"}
-COMMIT_POLICIES = {"development-commit", "pinned-commit"}
+COMMIT_POLICIES = {"development-commit", "pinned-commit", "reviewed-commit"}
 
 
 def compare_versions(current, candidate):
@@ -87,6 +87,8 @@ def decide(policy, selected, candidate, *,
             status, reason = "unchanged", "equal-version"
         else:
             status, reason = "blocked", "older-version"
+    elif policy == "reviewed-commit":
+        status, reason = "update", "changed-commit-requires-review"
     else:
         if ancestry is None:
             raise ValueError("Development policy requires Git ancestry")

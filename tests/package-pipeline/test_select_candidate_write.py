@@ -21,6 +21,28 @@ class CandidateWriteSelectionTests(unittest.TestCase):
     def test_exact_candidate_selected(self):
         self.assertEqual(select(REPORT, "wezterm", NEW), [REPORT[1]])
 
+    def test_migrated_packages_are_selectable(self):
+        cases = {
+            "gameshell": ("a" * 40, "b" * 40),
+            "noctalia-custom": ("a" * 40, "b" * 40),
+            "noctalia-greeter-t4t3z0r": (
+                "v1.7.1", "v1.7.2"
+            ),
+        }
+
+        for package, (old, new) in cases.items():
+            with self.subTest(package=package):
+                item = {
+                    "package": package,
+                    "status": "update",
+                    "selected": old,
+                    "candidate": new,
+                }
+                self.assertEqual(
+                    select([item], package, new),
+                    [item],
+                )
+
     def test_stale_candidate_rejected(self):
         with self.assertRaisesRegex(ValueError, "no longer current"):
             select(REPORT, "wezterm", "a" * 40)
