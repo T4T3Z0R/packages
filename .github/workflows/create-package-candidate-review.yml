@@ -104,8 +104,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          python3 scripts/package-pipeline/run_candidate_reviews.py \
-            selected-report.json | tee postwrite-review.json
+          python3 scripts/package-pipeline/verify_candidate_write.py \
+            selected-report.json \
+            prewrite-review.json \
+            issue-write-result.json \
+            postwrite-review.json
           python3 - <<'PY'
           import json
           import os
@@ -155,6 +158,7 @@ jobs:
           PY
 
       - name: Upload review evidence
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: candidate-review-write-${{ github.run_id }}
