@@ -101,6 +101,42 @@ class SourceContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exactly one"):
             contract.verify("wezterm", config, root)
 
+    def test_ghostty_git_tag_source_contract(self):
+        config = MANIFEST["packages"]["ghostty"]
+        self.assertEqual(
+            config["release_policy"], "stable-git-tag"
+        )
+        result = contract.verify("ghostty", config)
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["source_field"], "pkgver")
+        self.assertEqual(result["source_value"], "1.4.0")
+
+    def test_release_based_stable_tag_remains_supported(self):
+        config = copy.deepcopy(
+            MANIFEST["packages"]["ghostty"]
+        )
+        config["release_policy"] = "stable-tag"
+        result = contract.verify("ghostty", config)
+        self.assertTrue(result["verified"])
+
+    def test_pinned_tag_remains_supported(self):
+        config = copy.deepcopy(
+            MANIFEST["packages"]["ghostty"]
+        )
+        config["release_policy"] = "pinned-tag"
+        result = contract.verify("ghostty", config)
+        self.assertTrue(result["verified"])
+
+    def test_unknown_policy_still_rejected(self):
+        config = copy.deepcopy(
+            MANIFEST["packages"]["ghostty"]
+        )
+        config["release_policy"] = "unapproved-policy"
+        with self.assertRaisesRegex(
+            ValueError, "unsupported release policy"
+        ):
+            contract.verify("ghostty", config)
+
     def test_unprefixed_keepassxc_tag(self):
         result = contract.verify(
             "keepassxc", MANIFEST["packages"]["keepassxc"]
