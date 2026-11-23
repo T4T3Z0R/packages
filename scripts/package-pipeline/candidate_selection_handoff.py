@@ -238,6 +238,8 @@ def plan(event, live_issue, upstream, pulls, manifest):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("event", type=Path)
+    parser.add_argument("--manifest", type=Path,
+                        default=DEFAULT_MANIFEST)
     args = parser.parse_args()
 
     event = json.loads(args.event.read_text())
@@ -248,7 +250,7 @@ def main():
     if type(number) is not int or number <= 0:
         raise ValueError("Invalid issue number")
 
-    manifest = json.loads(DEFAULT_MANIFEST.read_text())
+    manifest = json.loads(args.manifest.read_text())
 
     current = github_api(f"repos/{REPOSITORY}/issues/{number}")
     pulls = pull_history(github_api)

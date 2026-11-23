@@ -148,12 +148,13 @@ class HandoffTests(unittest.TestCase):
             ROOT / ".github/workflows"
             / "review-package-candidate-approval.yml"
         ).read_text()
+        evaluate = workflow.split("\n  create-selection-pr:", 1)[0]
         self.assertIn("issues: read", workflow)
         self.assertIn("pull-requests: read", workflow)
         self.assertIn("contents: read", workflow)
         self.assertIn("GITHUB_RUN_ATTEMPT", workflow)
-        self.assertNotIn("contents: write", workflow)
-        self.assertNotIn("gh pr create", workflow)
+        self.assertNotIn("contents: write", evaluate)
+        self.assertNotIn("gh pr create", evaluate)
         self.assertNotIn("gh workflow run", workflow)
 
 

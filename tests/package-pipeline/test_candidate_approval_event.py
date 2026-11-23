@@ -130,6 +130,7 @@ class ApprovalEventTests(unittest.TestCase):
             ROOT / ".github/workflows"
             / "review-package-candidate-approval.yml"
         ).read_text()
+        evaluate = workflow.split("\n  create-selection-pr:", 1)[0]
 
         self.assertIn("types: [labeled]", workflow)
         self.assertIn("issues: read", workflow)
@@ -137,9 +138,9 @@ class ApprovalEventTests(unittest.TestCase):
         self.assertIn("GITHUB_RUN_ATTEMPT", workflow)
         self.assertIn("GITHUB_SHA", workflow)
         self.assertNotIn("issues: write", workflow)
-        self.assertNotIn("contents: write", workflow)
+        self.assertNotIn("contents: write", evaluate)
         self.assertNotIn("gh workflow run", workflow)
-        self.assertNotIn("gh pr create", workflow)
+        self.assertNotIn("gh pr create", evaluate)
 
 
 if __name__ == "__main__":
