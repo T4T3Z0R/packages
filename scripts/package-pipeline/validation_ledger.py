@@ -9,6 +9,9 @@ SHA = re.compile(r"[0-9a-f]{40}\Z")
 FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
 
 VALIDATION_JOBS = {
+    "gameshell": "Validate unsigned candidate",
+    "noctalia-custom": "Validate unsigned candidate",
+    "noctalia-greeter-t4t3z0r": "Validate unsigned candidate",
     "ghostty": "Build and validate unsigned Ghostty split packages",
     "keepassxc": "Build and validate unsigned KeePassXC",
     "syncthing": "Build and validate unsigned Syncthing",
@@ -68,6 +71,12 @@ def classify(run, jobs, artifacts, *, package, target, fingerprint):
         return "retry"
 
     steps = validation.get("steps", [])
+    if package in ("gameshell", "noctalia-custom",
+                   "noctalia-greeter-t4t3z0r"):
+        bound = [step for step in steps
+                 if step.get("name") == "Verify selected manifest source"]
+        if len(bound) != 1 or bound[0].get("conclusion") != "success":
+            return "retry"
     uploads = [
         step for step in steps
         if step.get("name") == "Upload unsigned candidate and evidence"

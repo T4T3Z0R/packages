@@ -7,7 +7,7 @@ No workflow dispatch, mutation, signing, or publishing.
 import json
 import subprocess
 
-from select_package_validation import SUPPORTED
+from select_package_validation import SUPPORTED, workflow_file
 
 PER_PAGE = 100
 MAX_PAGES = 100
@@ -99,7 +99,7 @@ def validation_runs(api, repo, package):
     if package not in SUPPORTED:
         raise ValueError("Unsupported package")
 
-    workflow = f"publish-{package}.yml"
+    workflow = workflow_file(package)
 
     return fetch_pages(
         api,

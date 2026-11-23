@@ -8,7 +8,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from select_package_validation import SUPPORTED
+from select_package_validation import SUPPORTED, TEMPLATE_PACKAGES, workflow_file
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 
@@ -42,8 +42,11 @@ def fingerprint(root, revision, package):
     if config.get("auto_publish") is not False:
         raise ValueError("Automatic publication is forbidden")
 
-    if config.get("recipe") != f"arch/{package}/PKGBUILD":
+    recipe = (f"arch/{package}/PKGBUILD.in" if package in TEMPLATE_PACKAGES
+              else f"arch/{package}/PKGBUILD")
+    if config.get("recipe") != recipe:
         raise ValueError("Unexpected recipe path")
+    git(root, "cat-file", "-e", f"{revision}:{recipe}")
 
     recipe_tree = git(
         root, "rev-parse", "--verify",
@@ -52,7 +55,7 @@ def fingerprint(root, revision, package):
 
     workflow_blob = git(
         root, "rev-parse", "--verify",
-        f"{revision}:.github/workflows/publish-{package}.yml"
+        f"{revision}:.github/workflows/{workflow_file(package)}"
     )
 
     # Canonical serialization makes object order irrelevant.

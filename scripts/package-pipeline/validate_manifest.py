@@ -13,8 +13,11 @@ STABLE_TAG = re.compile(r"(?:v)?[0-9]+(?:[.][0-9]+){2}(?:[.][0-9]+)?", re.ASCII)
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}", re.ASCII)
 
 STABLE_POLICIES = {"stable-tag", "stable-git-tag", "pinned-tag"}
-COMMIT_POLICIES = {"development-commit", "pinned-commit"}
+COMMIT_POLICIES = {"development-commit", "pinned-commit", "reviewed-commit"}
 SUPPORTED_POLICIES = STABLE_POLICIES | COMMIT_POLICIES
+TRACKED_REF = re.compile(
+    r"refs/(?:heads|tags)/[A-Za-z0-9][A-Za-z0-9._/-]*"
+)
 
 
 REQUIRED_FIELDS = {
@@ -39,7 +42,11 @@ def validate():
         if not PACKAGE_NAME.fullmatch(name):
             raise ValueError(f"Invalid package name: {name}")
 
-        if type(config) is not dict or set(config) != REQUIRED_FIELDS:
+        if (
+            type(config) is not dict
+            or not REQUIRED_FIELDS <= set(config)
+            or set(config) - REQUIRED_FIELDS - {"tracking_ref"}
+        ):
             raise ValueError(f"{name}: unexpected or missing fields")
 
         for field in ("upstream", "source_ref", "release_policy",
@@ -55,6 +62,18 @@ def validate():
 
         if policy not in SUPPORTED_POLICIES:
             raise ValueError(f"{name}: unsupported release policy")
+
+        if "tracking_ref" in config:
+            track = config["tracking_ref"]
+            if (
+                policy not in ("development-commit", "reviewed-commit")
+                or type(track) is not str
+                or not TRACKED_REF.fullmatch(track)
+                or ".." in track
+                or "//" in track
+                or track.endswith("/")
+            ):
+                raise ValueError(f"{name}: invalid tracking reference")
 
         if policy in STABLE_POLICIES:
             if not STABLE_TAG.fullmatch(ref):

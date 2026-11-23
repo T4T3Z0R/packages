@@ -8,6 +8,16 @@ on:
         description: Upstream Noctalia Greeter release tag
         required: true
         type: string
+      expected_revision:
+        description: Exact infrastructure commit expected for unsigned validation
+        type: string
+        required: false
+        default: ""
+      publish:
+        description: Request protected signing and publication after validation
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -38,7 +48,7 @@ jobs:
           set -euo pipefail
 
           pacman -Syu --noconfirm --needed \
-            base-devel git curl jq namcap \
+            base-devel git curl jq namcap python \
             meson ninja pkgconf \
             greetd dbus \
             wayland wayland-protocols wlroots0.20 \
@@ -51,6 +61,15 @@ jobs:
 
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
+
+      - name: Verify requested infrastructure revision
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_revision != '' }}
+        env:
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_REVISION"
 
       - name: Checkout upstream greeter
         uses: actions/checkout@v6
@@ -162,6 +181,15 @@ jobs:
             }
           }' <<< "$tag_json" \
             > evidence/upstream-tag-verification.json
+
+      - name: Verify selected manifest source
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish != true }}
+        env:
+          SOURCE_TAG: ${{ inputs.source_tag }}
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/verify_validation_source.py \
+            --package noctalia-greeter-t4t3z0r --source "$SOURCE_TAG"
 
       - name: Create package source
         run: |
@@ -346,7 +374,7 @@ jobs:
       - name: Upload unsigned candidate and evidence
         uses: actions/upload-artifact@v4
         with:
-          name: noctalia-greeter-${{ inputs.source_tag }}-candidate
+          name: noctalia-greeter-t4t3z0r-${{ github.run_id }}-${{ github.run_attempt }}-candidate
           path: |
             candidate/
             evidence/
@@ -356,6 +384,7 @@ jobs:
   approval-ready:
     name: Notify signing approval ready
     needs: validate
+    if: inputs.publish == true
     runs-on: ubuntu-latest
 
     steps:
@@ -392,6 +421,7 @@ jobs:
     needs:
       - validate
       - approval-ready
+    if: inputs.publish == true
 
     runs-on: ubuntu-latest
 
@@ -436,7 +466,7 @@ jobs:
       - name: Download exact validated candidate
         uses: actions/download-artifact@v8
         with:
-          name: noctalia-greeter-${{ inputs.source_tag }}-candidate
+          name: noctalia-greeter-t4t3z0r-${{ github.run_id }}-${{ github.run_attempt }}-candidate
           path: validated
 
       - name: Verify validated candidate

@@ -121,6 +121,36 @@ class CandidateWriteWorkflowTests(unittest.TestCase):
                     execute(changed).returncode, 0
                 )
 
+    def test_choices_match_approved_registry(self):
+        import json
+
+        manifest = json.loads(
+            (ROOT / "arch/packages/manifest.json").read_text()
+        )
+
+        expected = {
+            name
+            for name, config in manifest["packages"].items()
+            if config["status"] == "approved"
+            and config["auto_publish"] is False
+        }
+
+        choices = self.source.split(
+            "        options:\n", 1
+        )[1].split(
+            "      candidate:\n", 1
+        )[0]
+
+        actual = {
+            line.strip().removeprefix("- ")
+            for line in choices.splitlines()
+        }
+
+        self.assertEqual(actual, expected)
+        self.assertIn(
+            "|".join(sorted(expected)), self.source
+        )
+
     def test_explicit_confirmation(self):
         self.assertIn("type: choice", self.source)
         self.assertIn(
@@ -186,12 +216,39 @@ class CandidateWriteWorkflowTests(unittest.TestCase):
     def test_no_publication_access(self):
         for marker in (
             "ARCH_REPO_SIGNING_PASSPHRASE",
-            "PUSHOVER",
             "publish-repository.sh",
             "makepkg",
             "gh release upload",
         ):
             self.assertNotIn(marker, self.source)
+
+    def test_new_candidate_notification_is_gated(self):
+        self.assertIn(
+            "id: verify_review", self.source
+        )
+        self.assertIn(
+            "if: ${{ steps.verify_review.outputs.created_issue_number != '' }}",
+            self.source,
+        )
+        self.assertIn(
+            'if write["action"] == "created":',
+            self.source,
+        )
+        self.assertIn(
+            "created_issue_number=", self.source
+        )
+        self.assertEqual(
+            self.source.count(
+                "https://api.pushover.net/1/messages.json"
+            ), 1
+        )
+        self.assertIn(
+            "https://github.com/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}",
+            self.source,
+        )
+        self.assertNotIn(
+            "publish-repository.sh", self.source
+        )
 
     def test_bounded_postwrite_verification(self):
         self.assertIn(

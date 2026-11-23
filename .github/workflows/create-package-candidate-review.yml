@@ -8,8 +8,11 @@ on:
         required: true
         type: choice
         options:
+          - gameshell
           - ghostty
           - keepassxc
+          - noctalia-custom
+          - noctalia-greeter-t4t3z0r
           - syncthing
           - wezterm
       candidate:
@@ -59,7 +62,8 @@ jobs:
       - name: Install discovery dependencies
         run: |
           set -euo pipefail
-          pacman -Syu --noconfirm --needed python git github-cli
+          pacman -Syu --noconfirm --needed python git github-cli curl
+          command -v curl
           command -v vercmp
 
       - name: Checkout default-branch source
@@ -100,6 +104,7 @@ jobs:
             selected-report.json --create | tee issue-write-result.json
 
       - name: Verify issue history after write
+        id: verify_review
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -138,6 +143,16 @@ jobs:
               if before["action"] != "create":
                   assert before["issue_number"] == write["issue_number"]
 
+          if write["action"] == "created":
+              with open(
+                  os.environ["GITHUB_OUTPUT"],
+                  "a",
+                  encoding="utf-8",
+              ) as output:
+                  output.write(
+                      f"created_issue_number={write['issue_number']}\n"
+                  )
+
           summary = (
               "## Manual package candidate review\n\n"
               f"Package: `{write['package']}`\n\n"
@@ -156,6 +171,37 @@ jobs:
 
           print(summary)
           PY
+
+      - name: Notify new candidate review via Pushover
+        if: ${{ steps.verify_review.outputs.created_issue_number != '' }}
+        env:
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          ISSUE_NUMBER: ${{ steps.verify_review.outputs.created_issue_number }}
+          REQUESTED_PACKAGE: ${{ inputs.package }}
+          REQUESTED_CANDIDATE: ${{ inputs.candidate }}
+        run: |
+          set -euo pipefail
+
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REPOSITORY" = T4T3Z0R/packages
+
+          test -n "$PUSHOVER_APP_TOKEN"
+          test -n "$PUSHOVER_USER_KEY"
+
+          [[ "$ISSUE_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          [[ "$REQUESTED_PACKAGE" =~ ^(gameshell|ghostty|keepassxc|noctalia-custom|noctalia-greeter-t4t3z0r|syncthing|wezterm)$ ]]
+          [[ "$REQUESTED_CANDIDATE" =~ ^[A-Za-z0-9._+-]{1,100}$ ]]
+
+          curl --fail --silent --show-error \
+            --form-string "token=$PUSHOVER_APP_TOKEN" \
+            --form-string "user=$PUSHOVER_USER_KEY" \
+            --form-string 'title=Package candidate review required' \
+            --form-string "message=${REQUESTED_PACKAGE} candidate ${REQUESTED_CANDIDATE} needs manual review. No build or publication authorized." \
+            --form-string "url=https://github.com/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}" \
+            --form-string 'url_title=Open candidate review' \
+            https://api.pushover.net/1/messages.json
 
       - name: Upload review evidence
         if: ${{ !cancelled() }}

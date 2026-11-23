@@ -67,6 +67,22 @@ class CandidateTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "blocked")
 
+    def test_changed_reviewed_commit(self):
+        result = self.decide(
+            "reviewed-commit", "a" * 40, "b" * 40
+        )
+        self.assertEqual(result["status"], "update")
+        self.assertEqual(
+            result["reason"],
+            "changed-commit-requires-review",
+        )
+
+    def test_unchanged_reviewed_commit(self):
+        result = self.decide(
+            "reviewed-commit", "a" * 40, "a" * 40
+        )
+        self.assertEqual(result["status"], "unchanged")
+
     def test_development_descendant(self):
         result = self.decide(
             "development-commit", "a" * 40, "b" * 40,

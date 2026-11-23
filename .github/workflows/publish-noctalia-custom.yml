@@ -8,6 +8,16 @@ on:
         required: true
         default: custom
         type: string
+      expected_revision:
+        description: Exact infrastructure commit expected for unsigned validation
+        type: string
+        required: false
+        default: ""
+      publish:
+        description: Request protected signing and publication after validation
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -36,7 +46,7 @@ jobs:
           set -euo pipefail
 
           pacman -Syu --noconfirm --needed \
-            base-devel git namcap \
+            base-devel git namcap python \
             meson ninja pkgconf \
             wayland wayland-protocols \
             libglvnd freetype2 fontconfig noto-fonts \
@@ -52,6 +62,15 @@ jobs:
 
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
+
+      - name: Verify requested infrastructure revision
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_revision != '' }}
+        env:
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_REVISION"
 
       - name: Checkout Noctalia source
         uses: actions/checkout@v6
@@ -99,6 +118,13 @@ jobs:
           echo "Base tag: ${base_tag}"
           echo "Source commit: ${source_sha}"
           echo "Package version: ${pkgver}"
+
+      - name: Verify selected manifest source
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish != true }}
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/verify_validation_source.py \
+            --package noctalia-custom --source "$SOURCE_SHA"
 
       - name: Create build user
         run: |
@@ -399,7 +425,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: noctalia-custom-${{ github.run_id }}-candidate
+          name: noctalia-custom-${{ github.run_id }}-${{ github.run_attempt }}-candidate
           path: |
             candidate/
             evidence/
@@ -409,6 +435,7 @@ jobs:
   approval-ready:
     name: Notify signing approval ready
     needs: validate
+    if: inputs.publish == true
     runs-on: ubuntu-latest
 
     steps:
@@ -445,6 +472,7 @@ jobs:
     needs:
       - validate
       - approval-ready
+    if: inputs.publish == true
 
     runs-on: ubuntu-latest
 
@@ -489,7 +517,7 @@ jobs:
       - name: Download exact validated candidate
         uses: actions/download-artifact@v8
         with:
-          name: noctalia-custom-${{ github.run_id }}-candidate
+          name: noctalia-custom-${{ github.run_id }}-${{ github.run_attempt }}-candidate
           path: validated
 
       - name: Verify validated candidate

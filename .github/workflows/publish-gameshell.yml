@@ -13,9 +13,16 @@ on:
         required: true
         default: latest
         type: string
-  schedule:
-    - cron: '37 9 * * *'
-      timezone: "America/New_York"
+      expected_revision:
+        description: Exact infrastructure commit expected for unsigned validation
+        type: string
+        required: false
+        default: ""
+      publish:
+        description: Request protected signing and publication after validation
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -44,6 +51,15 @@ jobs:
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
 
+      - name: Verify requested infrastructure revision
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_revision != '' }}
+        env:
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_REVISION"
+
       - name: Checkout upstream GameShell
         uses: actions/checkout@v6
         with:
@@ -57,6 +73,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || 'latest' }}
+          REQUESTED_PUBLISH: ${{ inputs.publish }}
         run: |
           set -euo pipefail
 
@@ -125,22 +142,27 @@ jobs:
               # package version already exists in the rolling repository.
               update=true
               ;;
-            push)
-              # Publishing different bytes under an existing package version
-              # would be poisonous. Require pkgrel to move instead.
-              if [[ "$package_exists" == true ]]; then
-                echo "Package already exists: $package_file" >&2
-                echo "Bump pkgrel before publishing recipe changes." >&2
-                exit 1
-              fi
-              update=true
+            workflow_dispatch)
+              case "$REQUESTED_PUBLISH" in
+                false)
+                  # An unsigned validation is meaningful even when the
+                  # identical package version has already been published.
+                  update=true
+                  ;;
+                true)
+                  # Preserve the existing publication collision behavior.
+                  if [[ "$package_exists" == true ]]; then
+                    update=false
+                  else
+                    update=true
+                  fi
+                  ;;
+                *) echo 'Invalid publish intent' >&2; exit 1 ;;
+              esac
               ;;
             *)
-              if [[ "$package_exists" == true ]]; then
-                update=false
-              else
-                update=true
-              fi
+              echo "Unsupported GameShell event: $GITHUB_EVENT_NAME" >&2
+              exit 1
               ;;
           esac
 
@@ -181,7 +203,7 @@ jobs:
         run: |
           set -euo pipefail
           pacman -Syu --noconfirm --needed \
-            base-devel bash gawk gettext git namcap
+            base-devel bash gawk gettext git namcap python
 
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
@@ -200,6 +222,15 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config --global --add safe.directory \
             "$GITHUB_WORKSPACE/source/GameShell"
+
+      - name: Verify selected manifest source
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish != true }}
+        env:
+          SOURCE_SHA: ${{ needs.detect.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/verify_validation_source.py \
+            --package gameshell --source "$SOURCE_SHA"
 
       - name: Verify mutable upstream tag has not moved
         env:
@@ -390,7 +421,7 @@ jobs:
       - name: Upload unsigned candidate and evidence
         uses: actions/upload-artifact@v4
         with:
-          name: gameshell-${{ needs.detect.outputs.pkgver }}-${{ needs.detect.outputs.pkgrel }}-candidate
+          name: gameshell-${{ github.run_id }}-${{ github.run_attempt }}-candidate
           path: |
             candidate/
             evidence/
@@ -404,7 +435,8 @@ jobs:
       - validate
     if: >-
       needs.detect.outputs.update == 'true' &&
-      github.event_name != 'pull_request'
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish == true
     runs-on: ubuntu-latest
 
     steps:
@@ -439,7 +471,8 @@ jobs:
       - approval-ready
     if: >-
       needs.detect.outputs.update == 'true' &&
-      github.event_name != 'pull_request'
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish == true
     runs-on: ubuntu-latest
 
     environment:
@@ -477,7 +510,7 @@ jobs:
       - name: Download exact validated candidate
         uses: actions/download-artifact@v8
         with:
-          name: gameshell-${{ needs.detect.outputs.pkgver }}-${{ needs.detect.outputs.pkgrel }}-candidate
+          name: gameshell-${{ github.run_id }}-${{ github.run_attempt }}-candidate
           path: validated
 
       - name: Verify validated candidate

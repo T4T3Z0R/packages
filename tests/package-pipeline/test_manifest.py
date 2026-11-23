@@ -154,6 +154,23 @@ class ManifestTests(unittest.TestCase):
         package["source_ref"] = "b" * 40
         self.check(data, True)
 
+    def test_registered_tracking_refs(self):
+        self.check(self.original, True)
+
+    def test_stable_policy_rejects_tracking_ref(self):
+        data = copy.deepcopy(self.original)
+        data["packages"]["ghostty"]["tracking_ref"] = (
+            "refs/heads/main"
+        )
+        self.check(data, False)
+
+    def test_tracking_ref_rejects_traversal(self):
+        data = copy.deepcopy(self.original)
+        data["packages"]["gameshell"]["tracking_ref"] = (
+            "refs/tags/../latest"
+        )
+        self.check(data, False)
+
     def test_development_ref_must_be_immutable(self):
         data = copy.deepcopy(self.original)
         package = data["packages"]["yazi"]

@@ -9,7 +9,7 @@ import json
 import re
 from pathlib import Path
 
-from select_package_validation import SUPPORTED
+from discover_upstream import DEFAULT_MANIFEST
 
 REF = re.compile(r"[A-Za-z0-9._+-]{1,100}\Z")
 
@@ -17,6 +17,10 @@ REF = re.compile(r"[A-Za-z0-9._+-]{1,100}\Z")
 def plan(results):
     if not isinstance(results, list):
         raise ValueError("Expected upstream report list")
+
+    registry = json.loads(
+        DEFAULT_MANIFEST.read_text()
+    )["packages"]
 
     proposals = []
     seen = set()
@@ -26,7 +30,10 @@ def plan(results):
             raise ValueError("Malformed upstream result")
 
         package = item.get("package")
-        if package not in SUPPORTED:
+        if (
+            package not in registry
+            or registry[package]["status"] != "approved"
+        ):
             raise ValueError("Unsupported package")
 
         if package in seen:
@@ -56,6 +63,8 @@ def plan(results):
         body = "\n".join([
             "## Upstream package candidate",
             "",
+            "<!-- t4t3z0r:candidate-alert:v1 -->",
+            "",
             f"- Package: `{package}`",
             f"- Selected: `{selected}`",
             f"- Candidate: `{candidate}`",
@@ -64,8 +73,8 @@ def plan(results):
             "",
             "- **Approve:** propose selecting this candidate.",
             "- **Deny:** reject this candidate.",
-            "- **Postpone:** revisit this candidate later.",
-            "- **Pin:** retain the selected source and propose pinning its policy.",
+            "- **Postpone:** defer this candidate; a different upstream candidate may still generate a review.",
+            "- **Pin:** hold this candidate; a package-wide policy pin requires a separately reviewed manifest change.",
             "",
             "No decision has been recorded.",
             "No builds, signing, or publication are authorized.",
