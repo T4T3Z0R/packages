@@ -193,6 +193,19 @@ class CandidateWriteWorkflowTests(unittest.TestCase):
         ):
             self.assertNotIn(marker, self.source)
 
+    def test_bounded_postwrite_verification(self):
+        self.assertIn(
+            "scripts/package-pipeline/verify_candidate_write.py",
+            self.source,
+        )
+        self.assertNotIn(
+            "selected-report.json | tee postwrite-review.json",
+            self.source,
+        )
+        self.assertIn(
+            "if: ${{ !cancelled() }}", self.source
+        )
+
     def test_checkout_git_trust_is_command_scoped(self):
         self.assertEqual(
             self.source.count(
