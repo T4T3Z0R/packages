@@ -153,7 +153,8 @@ jobs:
             "${PUBLISH_WORKFLOW}" \
             --repo "${GITHUB_REPOSITORY}" \
             --ref main \
-            -f source_tag="${latest_tag}"
+            -f source_tag="${latest_tag}" \
+            -f publish=true
 
           {
             echo "- Existing publisher run: \`none\`"

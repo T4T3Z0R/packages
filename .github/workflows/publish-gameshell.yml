@@ -13,6 +13,11 @@ on:
         required: true
         default: latest
         type: string
+      publish:
+        description: Request protected signing and publication after validation
+        required: false
+        type: boolean
+        default: false
   schedule:
     - cron: '37 9 * * *'
       timezone: "America/New_York"
@@ -404,7 +409,8 @@ jobs:
       - validate
     if: >-
       needs.detect.outputs.update == 'true' &&
-      github.event_name != 'pull_request'
+      github.event_name != 'pull_request' &&
+      (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.publish == true))
     runs-on: ubuntu-latest
 
     steps:
@@ -439,7 +445,8 @@ jobs:
       - approval-ready
     if: >-
       needs.detect.outputs.update == 'true' &&
-      github.event_name != 'pull_request'
+      github.event_name != 'pull_request' &&
+      (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.publish == true))
     runs-on: ubuntu-latest
 
     environment:

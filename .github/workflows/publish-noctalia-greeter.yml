@@ -8,6 +8,11 @@ on:
         description: Upstream Noctalia Greeter release tag
         required: true
         type: string
+      publish:
+        description: Request protected signing and publication after validation
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -356,6 +361,7 @@ jobs:
   approval-ready:
     name: Notify signing approval ready
     needs: validate
+    if: inputs.publish == true
     runs-on: ubuntu-latest
 
     steps:
@@ -392,6 +398,7 @@ jobs:
     needs:
       - validate
       - approval-ready
+    if: inputs.publish == true
 
     runs-on: ubuntu-latest
 

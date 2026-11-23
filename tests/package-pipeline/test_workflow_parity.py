@@ -190,5 +190,68 @@ class WorkflowParityTests(unittest.TestCase):
 
 
 
+
+    def test_validation_only_legacy_publishers(self):
+        names = (
+            "noctalia-custom",
+            "noctalia-greeter",
+            "gameshell",
+        )
+
+        for name in names:
+            with self.subTest(package=name):
+                source = (
+                    ROOT / ".github/workflows"
+                    / f"publish-{name}.yml"
+                ).read_text()
+
+                dispatch = source.split("permissions:", 1)[0]
+                self.assertIn("      publish:", dispatch)
+                self.assertIn("        type: boolean", dispatch)
+                self.assertIn("        default: false", dispatch)
+
+                lines = source.splitlines()
+                approval_start = lines.index("  approval-ready:")
+                publish_start = lines.index("  publish:")
+
+                approval = lines[approval_start:publish_start]
+                publishing = lines[publish_start:]
+
+                if name == "gameshell":
+                    for job in (approval, publishing):
+                        self.assertTrue(any(
+                            "inputs.publish == true" in line
+                            for line in job
+                        ))
+                        self.assertTrue(any(
+                            "github.event_name == 'schedule'" in line
+                            for line in job
+                        ))
+                        self.assertTrue(any(
+                            "github.event_name != 'pull_request'" in line
+                            for line in job
+                        ))
+                else:
+                    self.assertIn(
+                        "    if: inputs.publish == true",
+                        approval,
+                    )
+                    self.assertIn(
+                        "    if: inputs.publish == true",
+                        publishing,
+                    )
+
+                    self.assertTrue(any(
+                        "name: arch-repo-publish" in line
+                        for line in publishing
+                    ))
+
+        detector = (
+            ROOT / ".github/workflows"
+            / "check-noctalia-greeter.yml"
+        ).read_text()
+
+        self.assertIn("-f publish=true", detector)
+
 if __name__ == "__main__":
     unittest.main()
