@@ -66,6 +66,28 @@ class CandidateIssueStateTests(unittest.TestCase):
             "pinned",
         )
 
+    def test_holds_apply_only_to_exact_candidate(self):
+        next_candidate = {
+            "title": "Package candidate: ghostty @ v1.6.0"
+        }
+        for label in ("candidate:postponed", "candidate:pinned"):
+            with self.subTest(label=label):
+                held = issue([label])
+                self.assertEqual(
+                    self.check([held])["action"],
+                    label.removeprefix("candidate:"),
+                )
+                self.assertEqual(
+                    classify(next_candidate, [held])["action"],
+                    "create",
+                )
+
+    def test_removing_hold_restores_pending_review(self):
+        self.assertEqual(
+            self.check([issue(labels=[])])["action"],
+            "pending",
+        )
+
     def test_github_label_objects(self):
         self.assertEqual(
             self.check([

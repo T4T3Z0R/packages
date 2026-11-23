@@ -34,6 +34,11 @@ class CandidateReviewTests(unittest.TestCase):
             result[0]["body"],
         )
 
+    def test_decisions_explain_candidate_scope(self):
+        body = plan([candidate()])[0]["body"]
+        self.assertIn("a different upstream candidate", body)
+        self.assertIn("separately reviewed manifest change", body)
+
     def test_migrated_packages_registered(self):
         for name in (
             "gameshell",
