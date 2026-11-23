@@ -43,7 +43,7 @@ jobs:
           set -euo pipefail
 
           pacman -Syu --noconfirm --needed \
-            base-devel git curl jq namcap \
+            base-devel git curl jq namcap python \
             meson ninja pkgconf \
             greetd dbus \
             wayland wayland-protocols wlroots0.20 \
@@ -167,6 +167,15 @@ jobs:
             }
           }' <<< "$tag_json" \
             > evidence/upstream-tag-verification.json
+
+      - name: Verify selected manifest source
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish != true }}
+        env:
+          SOURCE_TAG: ${{ inputs.source_tag }}
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/verify_validation_source.py \
+            --package noctalia-greeter-t4t3z0r --source "$SOURCE_TAG"
 
       - name: Create package source
         run: |
@@ -351,7 +360,7 @@ jobs:
       - name: Upload unsigned candidate and evidence
         uses: actions/upload-artifact@v4
         with:
-          name: noctalia-greeter-${{ inputs.source_tag }}-candidate
+          name: noctalia-greeter-t4t3z0r-${{ github.run_id }}-${{ github.run_attempt }}-candidate
           path: |
             candidate/
             evidence/
@@ -443,7 +452,7 @@ jobs:
       - name: Download exact validated candidate
         uses: actions/download-artifact@v8
         with:
-          name: noctalia-greeter-${{ inputs.source_tag }}-candidate
+          name: noctalia-greeter-t4t3z0r-${{ github.run_id }}-${{ github.run_attempt }}-candidate
           path: validated
 
       - name: Verify validated candidate

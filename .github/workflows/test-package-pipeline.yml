@@ -84,6 +84,7 @@ jobs:
           python -m unittest discover -s tests/package-pipeline -p 'test_upstream_checker.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_upstream_report.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_package_selection.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_seven_package_validation.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_package_fingerprint.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_validation_ledger.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_github_validation_history.py' -v

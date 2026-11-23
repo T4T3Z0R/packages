@@ -186,7 +186,7 @@ jobs:
         run: |
           set -euo pipefail
           pacman -Syu --noconfirm --needed \
-            base-devel bash gawk gettext git namcap
+            base-devel bash gawk gettext git namcap python
 
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
@@ -205,6 +205,15 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config --global --add safe.directory \
             "$GITHUB_WORKSPACE/source/GameShell"
+
+      - name: Verify selected manifest source
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish != true }}
+        env:
+          SOURCE_SHA: ${{ needs.detect.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/verify_validation_source.py \
+            --package gameshell --source "$SOURCE_SHA"
 
       - name: Verify mutable upstream tag has not moved
         env:
@@ -395,7 +404,7 @@ jobs:
       - name: Upload unsigned candidate and evidence
         uses: actions/upload-artifact@v4
         with:
-          name: gameshell-${{ needs.detect.outputs.pkgver }}-${{ needs.detect.outputs.pkgrel }}-candidate
+          name: gameshell-${{ github.run_id }}-${{ github.run_attempt }}-candidate
           path: |
             candidate/
             evidence/
@@ -484,7 +493,7 @@ jobs:
       - name: Download exact validated candidate
         uses: actions/download-artifact@v8
         with:
-          name: gameshell-${{ needs.detect.outputs.pkgver }}-${{ needs.detect.outputs.pkgrel }}-candidate
+          name: gameshell-${{ github.run_id }}-${{ github.run_attempt }}-candidate
           path: validated
 
       - name: Verify validated candidate

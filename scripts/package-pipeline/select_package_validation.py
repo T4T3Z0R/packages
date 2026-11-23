@@ -11,11 +11,27 @@ import subprocess
 from pathlib import Path
 
 SUPPORTED = (
+    "gameshell",
     "ghostty",
     "keepassxc",
+    "noctalia-custom",
+    "noctalia-greeter-t4t3z0r",
     "syncthing",
     "wezterm",
 )
+
+TEMPLATE_PACKAGES = frozenset((
+    "gameshell",
+    "noctalia-custom",
+    "noctalia-greeter-t4t3z0r",
+))
+
+def workflow_file(package):
+    if package not in SUPPORTED:
+        raise ValueError("Unsupported package")
+    name = ("noctalia-greeter" if package == "noctalia-greeter-t4t3z0r"
+            else package)
+    return f"publish-{name}.yml"
 
 SELECTION_FIELDS = (
     "source_ref",
@@ -65,7 +81,7 @@ def select(before, after, changed_paths):
         )
 
         workflow_changed = (
-            f".github/workflows/publish-{name}.yml"
+            f".github/workflows/{workflow_file(name)}"
             in changed_paths
         )
 
