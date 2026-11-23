@@ -11,6 +11,8 @@ on:
       - "tests/package-pipeline/**"
       - "arch/packages/**"
       - ".github/workflows/test-package-pipeline.yml"
+      - ".github/workflows/package-validation-controller.yml"
+      - ".github/workflows/review-package-candidate-approval.yml"
       - ".github/workflows/check-package-upstream.yml"
       - ".github/workflows/create-package-candidate-review.yml"
       - ".github/workflows/publish-noctalia-greeter.yml"
@@ -26,6 +28,8 @@ on:
       - "tests/package-pipeline/**"
       - "arch/packages/**"
       - ".github/workflows/test-package-pipeline.yml"
+      - ".github/workflows/package-validation-controller.yml"
+      - ".github/workflows/review-package-candidate-approval.yml"
       - ".github/workflows/check-package-upstream.yml"
       - ".github/workflows/create-package-candidate-review.yml"
       - ".github/workflows/publish-noctalia-greeter.yml"
@@ -98,6 +102,7 @@ jobs:
           python -m unittest discover -s tests/package-pipeline -p 'test_candidate_approval_event.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_candidate_selection_handoff.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_candidate_selection_pr_writer.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_merged_selection_validation.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_candidate_issue_state.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_github_candidate_issues.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_create_candidate_issue.py' -v

@@ -8,9 +8,16 @@ on:
         required: false
         type: string
 
+  push:
+    branches: [main]
+    paths:
+      - 'arch/packages/manifest.json'
+
 permissions:
   contents: read
   actions: read
+  pull-requests: read
+  issues: read
 
 concurrency:
   group: package-validation-controller
@@ -19,6 +26,7 @@ concurrency:
 
 jobs:
   controller:
+    if: github.event_name == 'workflow_dispatch'
     name: Evaluate unsigned package validation
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -149,3 +157,69 @@ jobs:
               results, sort_keys=True
           ))
           PY
+
+
+  verify-merged-selection:
+    name: Verify merged source selection
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      - name: Checkout complete production history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify pushed production revision
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REPOSITORY" = T4T3Z0R/packages
+          test "$GITHUB_ACTOR" = T4T3Z0R
+          test "$GITHUB_TRIGGERING_ACTOR" = T4T3Z0R
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(gh api repos/T4T3Z0R/packages/branches/main --jq .commit.sha)" = "$GITHUB_SHA"
+          python3 scripts/package-pipeline/validate_manifest.py
+          for package in ghostty keepassxc syncthing wezterm; do
+            python3 scripts/package-pipeline/verify_source_contract.py \
+              --package "$package"
+          done
+
+      - name: Verify merged PR and owner approval without dispatch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/merged_selection_validation.py \
+            "$GITHUB_EVENT_PATH" | tee merged-selection-plan.json
+          python3 - <<'PYTHON'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(Path('merged-selection-plan.json').read_text())
+          lines = [
+              '## Merged source-selection verification',
+              '',
+              f"Decision: **{result['decision']}**",
+              f"Revision: `{result['revision']}`",
+              '',
+              'Read-only decision. No workflow dispatch, signing, or publication.',
+          ]
+          if result['decision'] == 'review_validation':
+              lines.insert(3, f"Package: `{result['package']}`")
+              lines.insert(4, f"Unsigned workflow: `{result['workflow']}`")
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as out:
+              out.write('\n'.join(lines) + '\n')
+          PYTHON
