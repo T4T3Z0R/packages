@@ -13,7 +13,7 @@
     "ghostty": {
       "upstream": "ghostty-org/ghostty",
       "source_ref": "v1.4.0",
-      "release_policy": "stable-tag",
+      "release_policy": "stable-git-tag",
       "license": "MIT",
       "recipe": "arch/ghostty/PKGBUILD",
       "status": "approved",

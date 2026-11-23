@@ -48,6 +48,19 @@ class UpstreamCheckerTests(unittest.TestCase):
         self.assertEqual(result["reason"], "newer-version")
         self.assertEqual(result["candidate"], "v2.1.8")
 
+    def test_git_tag_uses_stable_version_comparison(self):
+        result = checker.check(
+            "ghostty",
+            self.config("stable-git-tag", "v1.4.0"),
+            fetch=lambda url: [
+                {"ref": "refs/tags/v1.4.0"},
+                {"ref": "refs/tags/v1.5.0"},
+            ],
+            compare=compare,
+        )
+        self.assertEqual(result["status"], "update")
+        self.assertEqual(result["candidate"], "v1.5.0")
+
     def test_same_stable_release(self):
         result = checker.check(
             "example", self.config(),

@@ -12,7 +12,7 @@ UPSTREAM = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", re.ASCII)
 STABLE_TAG = re.compile(r"(?:v)?[0-9]+(?:[.][0-9]+){2}(?:[.][0-9]+)?", re.ASCII)
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}", re.ASCII)
 
-STABLE_POLICIES = {"stable-tag", "pinned-tag"}
+STABLE_POLICIES = {"stable-tag", "stable-git-tag", "pinned-tag"}
 COMMIT_POLICIES = {"development-commit", "pinned-commit"}
 SUPPORTED_POLICIES = STABLE_POLICIES | COMMIT_POLICIES
 
