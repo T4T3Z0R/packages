@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  issues: read
 
 concurrency:
   group: check-package-upstream
@@ -27,7 +28,7 @@ jobs:
       - name: Install discovery dependencies
         run: |
           set -euo pipefail
-          pacman -Syu --noconfirm --needed python git
+          pacman -Syu --noconfirm --needed python git github-cli
           command -v vercmp
 
       - name: Checkout package infrastructure
@@ -85,10 +86,64 @@ jobs:
           print("\n".join(lines))
           PY
 
+      - name: Evaluate candidate review history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          python3 scripts/package-pipeline/run_candidate_reviews.py \
+            upstream-report.json | tee candidate-review.json
+
+          python3 - <<'SUMMARY'
+          import json
+          import os
+          from pathlib import Path
+
+          results = json.loads(
+              Path("candidate-review.json").read_text()
+          )
+
+          lines = [
+              "## Candidate review decisions",
+              "",
+              "| Package | Candidate | Decision |",
+              "|---|---|---|",
+          ]
+
+          for item in results:
+              lines.append(
+                  f"| {item['package']} "
+                  f"| `{item['candidate']}` "
+                  f"| {item['action']} |"
+              )
+
+          if not results:
+              lines.append(
+                  "| None | None | No new candidates |"
+              )
+
+          lines.extend([
+              "",
+              "Read-only candidate review evaluation.",
+              "No issues created, notifications sent, "
+              "or source selections modified.",
+          ])
+
+          with open(
+              os.environ["GITHUB_STEP_SUMMARY"],
+              "a",
+              encoding="utf-8",
+          ) as output:
+              output.write("\n".join(lines) + "\n")
+          SUMMARY
+
       - name: Upload discovery report
         uses: actions/upload-artifact@v4
         with:
           name: upstream-report-${{ github.run_id }}
-          path: upstream-report.json
+          path: |
+            upstream-report.json
+            candidate-review.json
           if-no-files-found: error
           retention-days: 7

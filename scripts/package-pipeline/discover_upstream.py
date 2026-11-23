@@ -53,6 +53,50 @@ def discover(name, config, fetch=fetch_json):
         if not isinstance(candidate, str) or not STABLE_TAG.fullmatch(candidate):
             raise ValueError(f"{name}: invalid upstream stable tag")
         channel = "stable-release"
+    elif policy == "stable-git-tag":
+        refs = fetch(
+            f"{base}/git/matching-refs/tags/v"
+        )
+        if not isinstance(refs, list):
+            raise ValueError(
+                f"{name}: invalid Git tag response"
+            )
+
+        versions = []
+        prefix = "refs/tags/"
+
+        for item in refs:
+            if not isinstance(item, dict):
+                raise ValueError(
+                    f"{name}: malformed Git tag entry"
+                )
+            ref = item.get("ref")
+            if not isinstance(ref, str) or not ref.startswith(prefix):
+                raise ValueError(
+                    f"{name}: invalid Git tag reference"
+                )
+
+            tag = ref[len(prefix):]
+            if STABLE_TAG.fullmatch(tag):
+                versions.append(tag)
+
+        if not versions:
+            raise ValueError(
+                f"{name}: no stable version tags"
+            )
+
+        def version_key(tag):
+            parts = [
+                int(part)
+                for part in tag.removeprefix("v").split(".")
+            ]
+            return tuple((parts + [0] * 4)[:4])
+
+        candidate = max(
+            versions,
+            key=lambda tag: (version_key(tag), tag),
+        )
+        channel = "stable-git-tag"
     elif policy == "development-commit":
         repository = fetch(base)
         branch = repository.get("default_branch")

@@ -12,7 +12,7 @@ STABLE_TAG = re.compile(
 )
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 
-STABLE_POLICIES = {"stable-tag", "pinned-tag"}
+STABLE_POLICIES = {"stable-tag", "stable-git-tag", "pinned-tag"}
 COMMIT_POLICIES = {"development-commit", "pinned-commit"}
 
 
@@ -79,7 +79,7 @@ def decide(policy, selected, candidate, *,
         status, reason = "unchanged", "same-source"
     elif policy.startswith("pinned-"):
         status, reason = "blocked", "pinned"
-    elif policy == "stable-tag":
+    elif policy in ("stable-tag", "stable-git-tag"):
         comparison = compare(selected, candidate)
         if comparison < 0:
             status, reason = "update", "newer-version"

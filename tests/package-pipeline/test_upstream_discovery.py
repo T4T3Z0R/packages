@@ -39,6 +39,53 @@ class DiscoveryTests(unittest.TestCase):
             ["https://api.github.com/repos/example/project/releases/latest"],
         )
 
+    def test_stable_git_tags(self):
+        calls = []
+
+        def fetch(url):
+            calls.append(url)
+            return [
+                {"ref": "refs/tags/v1.4.0"},
+                {"ref": "refs/tags/v1.3.1"},
+                {"ref": "refs/tags/vt-1.0.1"},
+                {"ref": "refs/tags/v1.10.0"},
+                {"ref": "refs/tags/v1.9.9"},
+            ]
+
+        result = discovery.discover(
+            "ghostty",
+            self.config("stable-git-tag", "v1.4.0"),
+            fetch,
+        )
+        self.assertEqual(
+            result["candidate"], "v1.10.0"
+        )
+        self.assertEqual(
+            result["channel"], "stable-git-tag"
+        )
+        self.assertEqual(calls, [
+            "https://api.github.com/repos/"
+            "example/project/git/matching-refs/tags/v"
+        ])
+
+    def test_stable_git_tags_reject_empty(self):
+        with self.assertRaises(ValueError):
+            discovery.discover(
+                "ghostty",
+                self.config("stable-git-tag", "v1.4.0"),
+                lambda url: [
+                    {"ref": "refs/tags/vt-1.0.1"}
+                ],
+            )
+
+    def test_stable_git_tags_reject_malformed(self):
+        with self.assertRaises(ValueError):
+            discovery.discover(
+                "ghostty",
+                self.config("stable-git-tag", "v1.4.0"),
+                lambda url: [{"unexpected": "tag"}],
+            )
+
     def test_reject_prerelease(self):
         with self.assertRaises(ValueError):
             discovery.discover(

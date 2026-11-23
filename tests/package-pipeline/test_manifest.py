@@ -116,6 +116,20 @@ class ManifestTests(unittest.TestCase):
         data["packages"]["ghostty"]["recipe"] = "arch/ghostty/PKGBUILD.in"
         self.check(data, False)
 
+    def test_stable_git_tag_policy(self):
+        data = copy.deepcopy(self.original)
+        data["packages"]["ghostty"]["release_policy"] = (
+            "stable-git-tag"
+        )
+        self.check(data, True)
+
+    def test_stable_git_tag_rejects_commit(self):
+        data = copy.deepcopy(self.original)
+        data["packages"]["ghostty"]["source_ref"] = (
+            "a" * 40
+        )
+        self.check(data, False)
+
     def test_unapproved_policy(self):
         data = copy.deepcopy(self.original)
         data["packages"]["yazi"]["release_policy"] = "arbitrary-commit"

@@ -42,7 +42,7 @@ def verify(name, config, root=ROOT):
     policy = config["release_policy"]
     selected = config["source_ref"]
 
-    if policy in ("stable-tag", "pinned-tag"):
+    if policy in ("stable-tag", "stable-git-tag", "pinned-tag"):
         expected = selected.removeprefix("v")
         actual = assignment(source, "pkgver")
         field = "pkgver"
