@@ -85,11 +85,12 @@ class LedgerTests(unittest.TestCase):
 
     def test_validation_job_names_match_workflows(self):
         from validation_ledger import VALIDATION_JOBS
+        from select_package_validation import workflow_file
 
         for package, expected in VALIDATION_JOBS.items():
             workflow = (
                 ROOT / ".github/workflows"
-                / f"publish-{package}.yml"
+                / workflow_file(package)
             ).read_text()
 
             with self.subTest(package=package):
