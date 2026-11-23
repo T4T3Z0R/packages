@@ -97,6 +97,15 @@ jobs:
           python -m unittest discover -s tests/package-pipeline -p 'test_select_candidate_write.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_candidate_write_workflow.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_verify_candidate_write.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_verify_candidate_batch.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_scheduled_candidate_workflow.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_verify_scheduled_snapshot.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_candidate_notification_state.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_candidate_notification_reader.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_candidate_notification_dispatch.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_candidate_notification_receipt.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_candidate_notification_io.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_scheduled_candidate_notification_workflow.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_source_contract.py' -v
           for package in ghostty keepassxc syncthing wezterm; do
             python scripts/package-pipeline/verify_source_contract.py --package "$package"

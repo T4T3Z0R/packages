@@ -29,6 +29,10 @@ class CandidateReviewTests(unittest.TestCase):
         self.assertIn("Deny", result[0]["body"])
         self.assertIn("Postpone", result[0]["body"])
         self.assertIn("Pin", result[0]["body"])
+        self.assertIn(
+            "<!-- t4t3z0r:candidate-alert:v1 -->",
+            result[0]["body"],
+        )
 
     def test_migrated_packages_registered(self):
         for name in (

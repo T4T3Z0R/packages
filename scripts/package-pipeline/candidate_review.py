@@ -63,6 +63,8 @@ def plan(results):
         body = "\n".join([
             "## Upstream package candidate",
             "",
+            "<!-- t4t3z0r:candidate-alert:v1 -->",
+            "",
             f"- Package: `{package}`",
             f"- Selected: `{selected}`",
             f"- Candidate: `{candidate}`",
