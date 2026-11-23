@@ -83,7 +83,41 @@ class SevenPackageValidation(unittest.TestCase):
                 src = (ROOT / ".github/workflows" /
                        selector.workflow_file(package)).read_text()
                 self.assertEqual(src.count("name: Verify selected manifest source"), 1)
-                self.assertIn("inputs.publish != true", src)
+
+                lines = src.splitlines()
+
+                start = lines.index(
+                    "      - name: Verify selected manifest source"
+                )
+
+                end = next(
+                    (
+                        i for i in range(start + 1, len(lines))
+                        if lines[i].startswith("      - name: ")
+                    ),
+                    len(lines),
+                )
+
+                step = lines[start:end]
+                content = " ".join(step)
+
+                self.assertIn(
+                    "verify_validation_source.py", content
+                )
+                self.assertNotIn(
+                    "inputs.publish != true", content
+                )
+
+                if package == "gameshell":
+                    self.assertIn(
+                        "        if: ${{ github.event_name == 'workflow_dispatch' }}",
+                        step,
+                    )
+                else:
+                    self.assertFalse(
+                        any("        if:" in line for line in step)
+                    )
+
                 artifact = (f"{package}-${{{{ github.run_id }}}}-"
                             f"${{{{ github.run_attempt }}}}-candidate")
                 self.assertEqual(src.count("name: " + artifact), 2)

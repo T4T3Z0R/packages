@@ -3,20 +3,10 @@
 
 import re
 
-from select_package_validation import SUPPORTED
+from package_release_contract import SUPPORTED, VALIDATION_JOBS
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
-
-VALIDATION_JOBS = {
-    "gameshell": "Validate unsigned candidate",
-    "noctalia-custom": "Validate unsigned candidate",
-    "noctalia-greeter-t4t3z0r": "Validate unsigned candidate",
-    "ghostty": "Build and validate unsigned Ghostty split packages",
-    "keepassxc": "Build and validate unsigned KeePassXC",
-    "syncthing": "Build and validate unsigned Syncthing",
-    "wezterm": "Build and validate unsigned WezTerm pair",
-}
 
 PROTECTED_JOB_PREFIXES = (
     "Sign and publish",

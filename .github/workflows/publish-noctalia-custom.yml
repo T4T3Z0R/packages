@@ -120,7 +120,6 @@ jobs:
           echo "Package version: ${pkgver}"
 
       - name: Verify selected manifest source
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish != true }}
         run: |
           set -euo pipefail
           python3 scripts/package-pipeline/verify_validation_source.py \

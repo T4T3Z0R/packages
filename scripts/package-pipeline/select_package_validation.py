@@ -10,28 +10,9 @@ import re
 import subprocess
 from pathlib import Path
 
-SUPPORTED = (
-    "gameshell",
-    "ghostty",
-    "keepassxc",
-    "noctalia-custom",
-    "noctalia-greeter-t4t3z0r",
-    "syncthing",
-    "wezterm",
+from package_release_contract import (
+    SUPPORTED, TEMPLATE_PACKAGES, workflow_file,
 )
-
-TEMPLATE_PACKAGES = frozenset((
-    "gameshell",
-    "noctalia-custom",
-    "noctalia-greeter-t4t3z0r",
-))
-
-def workflow_file(package):
-    if package not in SUPPORTED:
-        raise ValueError("Unsupported package")
-    name = ("noctalia-greeter" if package == "noctalia-greeter-t4t3z0r"
-            else package)
-    return f"publish-{name}.yml"
 
 SELECTION_FIELDS = (
     "source_ref",

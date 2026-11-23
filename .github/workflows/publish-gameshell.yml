@@ -224,7 +224,7 @@ jobs:
             "$GITHUB_WORKSPACE/source/GameShell"
 
       - name: Verify selected manifest source
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish != true }}
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           SOURCE_SHA: ${{ needs.detect.outputs.source_sha }}
         run: |
