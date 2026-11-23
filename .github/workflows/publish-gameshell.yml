@@ -23,9 +23,6 @@ on:
         required: false
         type: boolean
         default: false
-  schedule:
-    - cron: '37 9 * * *'
-      timezone: "America/New_York"
 
 permissions:
   contents: read
@@ -145,16 +142,6 @@ jobs:
               # package version already exists in the rolling repository.
               update=true
               ;;
-            push)
-              # Publishing different bytes under an existing package version
-              # would be poisonous. Require pkgrel to move instead.
-              if [[ "$package_exists" == true ]]; then
-                echo "Package already exists: $package_file" >&2
-                echo "Bump pkgrel before publishing recipe changes." >&2
-                exit 1
-              fi
-              update=true
-              ;;
             workflow_dispatch)
               case "$REQUESTED_PUBLISH" in
                 false)
@@ -174,11 +161,8 @@ jobs:
               esac
               ;;
             *)
-              if [[ "$package_exists" == true ]]; then
-                update=false
-              else
-                update=true
-              fi
+              echo "Unsupported GameShell event: $GITHUB_EVENT_NAME" >&2
+              exit 1
               ;;
           esac
 
@@ -451,8 +435,8 @@ jobs:
       - validate
     if: >-
       needs.detect.outputs.update == 'true' &&
-      github.event_name != 'pull_request' &&
-      (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.publish == true))
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish == true
     runs-on: ubuntu-latest
 
     steps:
@@ -487,8 +471,8 @@ jobs:
       - approval-ready
     if: >-
       needs.detect.outputs.update == 'true' &&
-      github.event_name != 'pull_request' &&
-      (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.publish == true))
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish == true
     runs-on: ubuntu-latest
 
     environment:

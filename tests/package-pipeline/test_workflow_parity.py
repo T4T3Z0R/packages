@@ -69,9 +69,7 @@ class WorkflowParityTests(unittest.TestCase):
             "PACKAGE_NAME: gameshell",
             "scripts/package-pipeline/assemble-repository.sh",
             "scripts/package-pipeline/publish-repository.sh",
-            'github.event_name != \'pull_request\'',
-            'timezone: "America/New_York"',
-            "cron: '37 9 * * *'",
+            "github.event_name == 'workflow_dispatch'",
         )
 
         for marker in required:
@@ -224,11 +222,11 @@ class WorkflowParityTests(unittest.TestCase):
                             for line in job
                         ))
                         self.assertTrue(any(
-                            "github.event_name == 'schedule'" in line
+                            "github.event_name == 'workflow_dispatch'" in line
                             for line in job
                         ))
-                        self.assertTrue(any(
-                            "github.event_name != 'pull_request'" in line
+                        self.assertFalse(any(
+                            "github.event_name == 'schedule'" in line
                             for line in job
                         ))
                 else:
@@ -246,12 +244,24 @@ class WorkflowParityTests(unittest.TestCase):
                         for line in publishing
                     ))
 
-        detector = (
-            ROOT / ".github/workflows"
-            / "check-noctalia-greeter.yml"
+    def test_only_unified_upstream_discovery_is_scheduled(self):
+        workflows = ROOT / ".github/workflows"
+        self.assertFalse((
+            workflows / "check-noctalia-greeter.yml"
+        ).exists())
+        scheduled = sorted(
+            p.name for p in workflows.glob("*.yml")
+            if "\n  schedule:\n" in p.read_text()
+        )
+        self.assertEqual(scheduled, ["check-package-upstream.yml"])
+        discovery = (
+            workflows / "check-package-upstream.yml"
         ).read_text()
-
-        self.assertIn("-f publish=true", detector)
+        self.assertIn("report_upstream.py", discovery)
+        self.assertIn("write-reviews:", discovery)
+        for path in workflows.glob("*.yml"):
+            with self.subTest(workflow=path.name):
+                self.assertNotIn("-f publish=true", path.read_text())
 
 if __name__ == "__main__":
     unittest.main()

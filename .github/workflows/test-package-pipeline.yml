@@ -21,7 +21,6 @@ on:
       - ".github/workflows/publish-wezterm.yml"
       - ".github/workflows/publish-ghostty.yml"
       - "arch/ghostty/**"
-      - ".github/workflows/check-noctalia-greeter.yml"
   pull_request:
     paths:
       - "scripts/package-pipeline/**"
@@ -38,7 +37,6 @@ on:
       - ".github/workflows/publish-wezterm.yml"
       - ".github/workflows/publish-ghostty.yml"
       - "arch/ghostty/**"
-      - ".github/workflows/check-noctalia-greeter.yml"
 
 permissions:
   contents: read
