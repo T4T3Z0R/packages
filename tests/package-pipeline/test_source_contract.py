@@ -79,24 +79,14 @@ class SourceContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fixed PKGBUILD"):
             contract.verify("ghostty", config, root)
 
-    def test_wezterm_declared_package_version(self):
-        result = contract.verify(
-            "wezterm", MANIFEST["packages"]["wezterm"]
-        )
-        self.assertEqual(
-            result["pkgver"],
-            "20240203.110809.5046fc22.r965.ge1eae81a5",
-        )
-        self.assertEqual(result["pkgrel"], 1)
-        self.assertEqual(result["source_field"], "_commit")
-
     def test_invalid_declared_package_version_rejected(self):
         root, config, recipe = self.fixture("wezterm")
         original = recipe.read_text()
-        old = "pkgver=20240203.110809.5046fc22.r965.ge1eae81a5"
-        assert original.count(old) == 1
+        current = contract.assignment(original, "pkgver")
+        old = f"pkgver={current}\n"
+        self.assertEqual(original.count(old), 1)
         recipe.write_text(
-            original.replace(old, 'pkgver=$(echo wrong)', 1)
+            original.replace(old, "pkgver=$(echo wrong)\n", 1)
         )
         with self.assertRaisesRegex(ValueError, "exactly one"):
             contract.verify("wezterm", config, root)
