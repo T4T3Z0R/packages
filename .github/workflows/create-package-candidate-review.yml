@@ -70,7 +70,7 @@ jobs:
       - name: Verify checkout and package manifest
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
           python3 scripts/package-pipeline/validate_manifest.py
 
       - name: Discover and select exact candidate

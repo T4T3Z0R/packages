@@ -193,6 +193,15 @@ class CandidateWriteWorkflowTests(unittest.TestCase):
         ):
             self.assertNotIn(marker, self.source)
 
+    def test_checkout_git_trust_is_command_scoped(self):
+        self.assertEqual(
+            self.source.count(
+                'git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD'
+            ), 1
+        )
+        self.assertNotIn("git config --global", self.source)
+        self.assertNotIn("safe.directory=*", self.source)
+
     def test_checkout_credentials_disabled(self):
         self.assertIn(
             "uses: actions/checkout@v6", self.source
@@ -201,7 +210,7 @@ class CandidateWriteWorkflowTests(unittest.TestCase):
             "persist-credentials: false", self.source
         )
         self.assertIn(
-            'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
+            'test "$(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"',
             self.source,
         )
 
