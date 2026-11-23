@@ -64,6 +64,11 @@ jobs:
             echo "PASS: $tool"
           done
 
+          # The Arch container and checkout can have different owners.
+          # Trust only this workflow's checkout, not every repository.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" rev-parse --is-inside-work-tree >/dev/null
+
       - name: Verify shell syntax
         run: bash -n scripts/package-pipeline/assemble-repository.sh scripts/package-pipeline/publish-repository.sh
 
