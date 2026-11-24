@@ -1,3 +1,6 @@
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -52,6 +55,72 @@ class WorkflowParityTests(unittest.TestCase):
                 self.assertIn(marker, source)
         self.assertNotIn("gh release upload", source)
         self.assertNotIn("gh release delete-asset", source)
+
+
+    def test_gameshell_release_lookup_fails_closed(self):
+        source = (
+            ROOT / ".github/workflows/publish-gameshell.yml"
+        ).read_text()
+
+        start = '          package_exists=false\n'
+        end = '          {\n            echo "source_ref=$SOURCE_REF"\n'
+
+        self.assertEqual(source.count(start), 1)
+        self.assertEqual(source.count(end), 1)
+
+        body = start + source.split(start, 1)[1].split(end, 1)[0]
+
+        script = (
+            "set -euo pipefail\n"
+            "package_file=gameshell-2.0-1-any.pkg.tar.zst\n"
+            + body
+            + '\nprintf "%s:%s\\n" "$package_exists" "$update"\n'
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            stub = Path(directory) / "gh"
+            stub.write_text(
+                "#!/bin/sh\n"
+                "case \"$TEST_GH_MODE\" in\n"
+                "  found) echo gameshell-2.0-1-any.pkg.tar.zst;;\n"
+                "  missing) echo unrelated-1.0-1-any.pkg.tar.zst;;\n"
+                "  error) echo 'API unavailable' >&2; exit 17;;\n"
+                "  *) exit 99;;\n"
+                "esac\n"
+            )
+            stub.chmod(0o755)
+
+            cases = (
+                ("pull_request", "", "error", 0, "false:true\n"),
+                ("workflow_dispatch", "false", "error", 0, "false:true\n"),
+                ("workflow_dispatch", "true", "error", 17, ""),
+                ("workflow_dispatch", "true", "found", 0, "true:false\n"),
+                ("workflow_dispatch", "true", "missing", 0, "false:true\n"),
+            )
+
+            for event, intent, mode, status, output in cases:
+                with self.subTest(event=event, intent=intent, mode=mode):
+                    env = os.environ.copy()
+                    env.update({
+                        "PATH": directory + os.pathsep + env.get("PATH", ""),
+                        "TEST_GH_MODE": mode,
+                        "RELEASE_TAG": "arch-repo",
+                        "GITHUB_REPOSITORY": "T4T3Z0R/packages",
+                        "GITHUB_EVENT_NAME": event,
+                        "REQUESTED_PUBLISH": intent,
+                    })
+
+                    result = subprocess.run(
+                        ["bash", "-c", script],
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                    )
+
+                    self.assertEqual(
+                        result.returncode, status, result.stderr
+                    )
+                    self.assertEqual(result.stdout, output)
 
     def test_gameshell_shared_pipeline(self):
         source = (

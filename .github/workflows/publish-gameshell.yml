@@ -127,14 +127,6 @@ jobs:
 
           package_file="gameshell-${pkgver}-${pkgrel}-any.pkg.tar.zst"
           package_exists=false
-          if gh release view "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json assets \
-            --jq '.assets[].name' \
-            | grep -Fxq "$package_file"
-          then
-            package_exists=true
-          fi
 
           case "$GITHUB_EVENT_NAME" in
             pull_request)
@@ -150,8 +142,15 @@ jobs:
                   update=true
                   ;;
                 true)
-                  # Preserve the existing publication collision behavior.
-                  if [[ "$package_exists" == true ]]; then
+                  # A failed release-asset query must stop publication.
+                  remote_assets="$(
+                    gh release view "$RELEASE_TAG" \
+                      --repo "$GITHUB_REPOSITORY" \
+                      --json assets \
+                      --jq '.assets[].name'
+                  )"
+                  if grep -Fxq "$package_file" <<< "$remote_assets"; then
+                    package_exists=true
                     update=false
                   else
                     update=true
