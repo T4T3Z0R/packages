@@ -94,14 +94,195 @@ def download(release, name, directory):
     return result
 
 
+def collect_history_metadata(package, fingerprint, keyfile):
+    """Collect verified history metadata without remote mutations."""
+
+    if not re.fullmatch(r"[a-z][a-z0-9-]*", package):
+        raise ValueError("Invalid package identity")
+
+    if not re.fullmatch(r"[A-Fa-f0-9]{40}", fingerprint):
+        raise ValueError("Invalid signing fingerprint")
+
+    fingerprint = fingerprint.upper()
+
+    records = run(
+        "gpg", "--batch", "--with-colons",
+        "--show-keys", str(keyfile)
+    )
+
+    fingerprints = [
+        line.split(":")[9].upper()
+        for line in records.splitlines()
+        if line.startswith("fpr:")
+    ]
+
+    if fingerprint not in fingerprints:
+        raise ValueError("Signing fingerprint not in repository key")
+
+    release = "arch-history-" + package
+    names = inventory(release)
+
+    validate_history_inventory(
+        names, package, None,
+        allow_incomplete_current=False,
+    )
+
+    pattern = re.compile(
+        re.escape(package)
+        + r"-([A-Za-z0-9._+]+)-([0-9.]+)"
+        + r"-([A-Za-z0-9_]+)[.]pkg[.]tar[.]zst"
+    )
+
+    packages = sorted(
+        name for name in names
+        if not name.endswith(".sig")
+    )
+
+    if not all(pattern.fullmatch(name) for name in packages):
+        raise ValueError("Invalid historical filename")
+
+    versions = {}
+    hashes = {}
+
+    with tempfile.TemporaryDirectory() as temp:
+        directory = Path(temp)
+
+        for name in packages:
+            payload = download(release, name, directory)
+            signature = download(
+                release, name + ".sig", directory
+            )
+
+            verify_downloaded_pair(
+                payload, signature, fingerprint
+            )
+
+            metadata = run(
+                "bsdtar", "-xOf", str(payload), ".PKGINFO"
+            )
+
+            fields = {}
+
+            for field in ("pkgname", "pkgver", "arch"):
+                values = [
+                    line.partition(" = ")[2]
+                    for line in metadata.splitlines()
+                    if line.startswith(field + " = ")
+                ]
+
+                if len(values) != 1:
+                    raise ValueError(
+                        "Invalid historical metadata field: "
+                        + field
+                    )
+
+                fields[field] = values[0]
+
+            version, rel, arch = (
+                pattern.fullmatch(name).groups()
+            )
+            full = fields["pkgver"]
+
+            if (
+                fields["pkgname"] != package
+                or fields["arch"] != arch
+                or not re.fullmatch(
+                    r"(?:[0-9]+:)?[A-Za-z0-9._+]+-[0-9.]+",
+                    full,
+                )
+                or full.split(":")[-1] != f"{version}-{rel}"
+            ):
+                raise ValueError(
+                    "Historical metadata disagrees with filename: "
+                    + name
+                )
+
+            versions[name] = full
+            hashes[name] = digest(payload)
+            hashes[name + ".sig"] = digest(signature)
+
+            payload.unlink()
+            signature.unlink()
+
+        if inventory(release) != names:
+            raise ValueError(
+                "Historical inventory changed during collection"
+            )
+
+    return {
+        "package": package,
+        "release": release,
+        "names": sorted(names),
+        "versions": versions,
+        "sha256": hashes,
+    }
+
+
+def plan_verified_history(package, fingerprint, protected):
+    """Generate a pruning proposal from verified signed history."""
+    import runpy
+
+    policy = json.loads(
+        (ROOT / "arch/packages/retention.json").read_text()
+    )
+
+    if policy["schema_version"] != 1:
+        raise ValueError("Unsupported retention policy")
+
+    retain = policy["previous_versions"].get(
+        package, policy["default_previous_versions"]
+    )
+
+    if type(retain) is not int or retain < 1:
+        raise ValueError("Pruning requires positive retention policy")
+
+    metadata = collect_history_metadata(
+        package,
+        fingerprint,
+        ROOT / "arch/keys/t4t3z0r-package-signing.asc",
+    )
+
+    planner = runpy.run_path(str(
+        ROOT / "scripts/package-pipeline/plan-history-pruning.py"
+    ))
+
+    plan = planner["plan_pruning"](
+        package,
+        metadata["names"],
+        metadata["versions"],
+        protected,
+        retain,
+    )
+
+    plan["verified_metadata"] = metadata
+    return plan
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--package", required=True)
     parser.add_argument("--fingerprint", required=True)
     parser.add_argument("--staging", type=Path,
                         default=Path("archive-output"))
-    parser.add_argument("--publish", action="store_true")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--publish", action="store_true")
+    modes.add_argument("--plan-pruning", action="store_true")
+    parser.add_argument("--protected")
     args = parser.parse_args()
+
+    if args.plan_pruning:
+        if not args.protected:
+            parser.error("--plan-pruning requires --protected")
+
+        print(json.dumps(plan_verified_history(
+            args.package,
+            args.fingerprint,
+            args.protected,
+        ), indent=2))
+        return
+
+    if args.protected:
+        parser.error("--protected requires --plan-pruning")
 
     verified = json.loads(run(
         sys.executable, str(PREFLIGHT),
