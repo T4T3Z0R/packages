@@ -1,0 +1,69 @@
+name: Maintain package history
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Inspect history or recover pending transactions
+        type: choice
+        options:
+          - inspect
+          - recover
+        default: inspect
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    if: inputs.mode == 'inspect' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: arch-repo-publish
+      cancel-in-progress: false
+      queue: max
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Install maintenance dependencies
+        run: pacman -Syu --noconfirm --needed python github-cli git
+
+      - name: Checkout infrastructure
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Inspect historical releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python scripts/package-pipeline/maintain-history.py
+
+  recover:
+    if: inputs.mode == 'recover' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: arch-repo-publish
+    permissions:
+      contents: write
+    concurrency:
+      group: arch-repo-publish
+      cancel-in-progress: false
+      queue: max
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Install maintenance dependencies
+        run: pacman -Syu --noconfirm --needed python github-cli git
+
+      - name: Checkout infrastructure
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Recover authorized historical transactions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python scripts/package-pipeline/maintain-history.py --recover

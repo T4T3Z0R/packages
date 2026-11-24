@@ -12,6 +12,7 @@ on:
       - "tests/package-pipeline/**"
       - "arch/packages/**"
       - ".github/workflows/test-package-pipeline.yml"
+      - ".github/workflows/maintain-package-history.yml"
       - ".github/workflows/package-validation-controller.yml"
       - ".github/workflows/review-package-candidate-approval.yml"
       - ".github/workflows/check-package-upstream.yml"
@@ -36,6 +37,7 @@ on:
       - "tests/package-pipeline/**"
       - "arch/packages/**"
       - ".github/workflows/test-package-pipeline.yml"
+      - ".github/workflows/maintain-package-history.yml"
       - ".github/workflows/package-validation-controller.yml"
       - ".github/workflows/review-package-candidate-approval.yml"
       - ".github/workflows/check-package-upstream.yml"
@@ -154,4 +156,5 @@ jobs:
         run: |
           python -m unittest discover -s tests/package-pipeline -p "test_retention.py" -v
           python -m unittest discover -s tests/package-pipeline -p "test_history_publication.py" -v
+          python -m unittest discover -s tests/package-pipeline -p "test_history_maintenance.py" -v
           python -m unittest discover -s tests/package-pipeline -p "test_publication_archive_gate.py" -v
