@@ -94,6 +94,123 @@ def download(release, name, directory):
     return result
 
 
+def history_snapshot(release):
+    """Read stable release and asset identities without mutation."""
+
+    repo = os.environ["GH_REPO"]
+
+    if not re.fullmatch(
+        r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo
+    ):
+        raise ValueError("Invalid repository identity")
+
+    if not re.fullmatch(r"arch-history-[a-z][a-z0-9-]*", release):
+        raise ValueError("Invalid historical release tag")
+
+    document = json.loads(run(
+        "gh", "api", f"repos/{repo}/releases/tags/{release}"
+    ))
+
+    release_id = document.get("id")
+
+    if (
+        type(release_id) is not int
+        or release_id <= 0
+        or document.get("tag_name") != release
+        or document.get("draft") is not False
+    ):
+        raise ValueError("Invalid historical release identity")
+
+    pages = json.loads(run(
+        "gh", "api", "--paginate", "--slurp",
+        f"repos/{repo}/releases/{release_id}/assets?per_page=100"
+    ))
+
+    if not isinstance(pages, list) or not pages:
+        raise ValueError("Invalid historical asset inventory")
+
+    assets = {}
+    ids = set()
+
+    for page in pages:
+        if not isinstance(page, list):
+            raise ValueError("Invalid historical asset page")
+
+        for asset in page:
+            name = asset.get("name")
+            asset_id = asset.get("id")
+            size = asset.get("size")
+            checksum = asset.get("digest")
+            updated = asset.get("updated_at")
+
+            if (
+                not isinstance(name, str)
+                or not re.fullmatch(r"[A-Za-z0-9._+-]+", name)
+                or name in (".", "..")
+                or type(asset_id) is not int
+                or asset_id <= 0
+                or type(size) is not int
+                or size <= 0
+                or not isinstance(checksum, str)
+                or not re.fullmatch(
+                    r"sha256:[a-f0-9]{64}", checksum
+                )
+                or asset.get("state") != "uploaded"
+                or not isinstance(updated, str)
+                or not updated
+            ):
+                raise ValueError("Invalid historical asset metadata")
+
+            if name in assets or asset_id in ids:
+                raise ValueError("Duplicate historical asset identity")
+
+            ids.add(asset_id)
+
+            assets[name] = {
+                "id": asset_id,
+                "size": size,
+                "sha256": checksum.removeprefix("sha256:"),
+                "state": asset["state"],
+                "updated_at": updated,
+            }
+
+    return {
+        "repository": repo,
+        "release": release,
+        "release_id": release_id,
+        "assets": assets,
+    }
+
+
+def verify_snapshot_asset(path, record):
+    """Require downloaded bytes to match remote asset metadata."""
+
+    if path.stat().st_size != record["size"]:
+        raise ValueError(
+            "Historical asset size mismatch: " + path.name
+        )
+
+    checksum = digest(path)
+
+    if checksum != record["sha256"]:
+        raise ValueError(
+            "Historical asset digest mismatch: " + path.name
+        )
+
+    return checksum
+
+
+def require_unchanged_snapshot(expected):
+    """Reject changed release or asset identities."""
+
+    actual = history_snapshot(expected["release"])
+
+    if actual != expected:
+        raise ValueError("Historical asset snapshot changed")
+
+    return actual
+
+
 def collect_history_metadata(package, fingerprint, keyfile):
     """Collect verified history metadata without remote mutations."""
 
@@ -120,7 +237,8 @@ def collect_history_metadata(package, fingerprint, keyfile):
         raise ValueError("Signing fingerprint not in repository key")
 
     release = "arch-history-" + package
-    names = inventory(release)
+    snapshot = history_snapshot(release)
+    names = set(snapshot["assets"])
 
     validate_history_inventory(
         names, package, None,
@@ -151,6 +269,13 @@ def collect_history_metadata(package, fingerprint, keyfile):
             payload = download(release, name, directory)
             signature = download(
                 release, name + ".sig", directory
+            )
+
+            hashes[name] = verify_snapshot_asset(
+                payload, snapshot["assets"][name]
+            )
+            hashes[name + ".sig"] = verify_snapshot_asset(
+                signature, snapshot["assets"][name + ".sig"]
             )
 
             verify_downloaded_pair(
@@ -198,16 +323,11 @@ def collect_history_metadata(package, fingerprint, keyfile):
                 )
 
             versions[name] = full
-            hashes[name] = digest(payload)
-            hashes[name + ".sig"] = digest(signature)
 
             payload.unlink()
             signature.unlink()
 
-        if inventory(release) != names:
-            raise ValueError(
-                "Historical inventory changed during collection"
-            )
+        require_unchanged_snapshot(snapshot)
 
     return {
         "package": package,
@@ -215,6 +335,7 @@ def collect_history_metadata(package, fingerprint, keyfile):
         "names": sorted(names),
         "versions": versions,
         "sha256": hashes,
+        "snapshot": snapshot,
     }
 
 

@@ -253,6 +253,9 @@ class HistoryMetadataTests(unittest.TestCase):
         self.change_inventory = False
         self.fail_download = False
         self.fail_signature = False
+        self.replace_asset = False
+        self.corrupt_content = False
+        self.truncate_content = False
 
     def fake_run(self, *args):
         if args[0] == "gpg":
@@ -270,18 +273,58 @@ class HistoryMetadataTests(unittest.TestCase):
             self.operations.append("metadata")
             return self.metadata
 
+        if args[:2] == ("gh", "api"):
+            import hashlib
+
+            if args[2] == (
+                "repos/example/disposable/releases/tags/"
+                "arch-history-" + PACKAGE
+            ):
+                self.views += 1
+                self.operations.append("view")
+
+                return json.dumps({
+                    "id": 100,
+                    "tag_name": "arch-history-" + PACKAGE,
+                    "draft": False,
+                })
+
+            self.assertEqual(args, (
+                "gh", "api", "--paginate", "--slurp",
+                "repos/example/disposable/releases/"
+                "100/assets?per_page=100",
+            ))
+
+            assets = []
+
+            if self.change_inventory and self.views > 1:
+                return "[[]]"
+
+            for index, (name, content) in enumerate(
+                sorted(self.remote.items())
+            ):
+                asset_id = 200 + index
+
+                if self.replace_asset and self.views > 1:
+                    asset_id += 100
+
+                assets.append({
+                    "id": asset_id,
+                    "name": name,
+                    "size": len(content),
+                    "digest": "sha256:" + hashlib.sha256(
+                        content
+                    ).hexdigest(),
+                    "state": "uploaded",
+                    "updated_at": "2026-11-20T22:23:07Z",
+                })
+
+            return json.dumps([assets])
+
         self.assertEqual(args[:2], ("gh", "release"))
 
         operation = args[2]
         self.operations.append(operation)
-
-        if operation == "view":
-            self.views += 1
-
-            if self.change_inventory and self.views > 1:
-                return "[]"
-
-            return json.dumps(sorted(self.remote))
 
         if operation == "download":
             if self.fail_download:
@@ -290,7 +333,17 @@ class HistoryMetadataTests(unittest.TestCase):
             name = args[args.index("--pattern") + 1]
             directory = Path(args[args.index("--dir") + 1])
 
-            (directory / name).write_bytes(self.remote[name])
+            content = self.remote[name]
+
+            if self.corrupt_content:
+                content = bytes(
+                    byte ^ 1 for byte in content
+                )
+
+            if self.truncate_content:
+                content = content[:-1]
+
+            (directory / name).write_bytes(content)
             return ""
 
         self.fail("Unexpected remote operation: " + operation)
@@ -429,7 +482,7 @@ class HistoryMetadataTests(unittest.TestCase):
     def test_inventory_change_rejected(self):
         self.change_inventory = True
 
-        with self.assertRaisesRegex(ValueError, "inventory changed"):
+        with self.assertRaisesRegex(ValueError, "snapshot changed"):
             self.collect()
 
 
@@ -554,6 +607,334 @@ class HistoryMetadataTests(unittest.TestCase):
         self.assertEqual(plan["protected"], FILE)
         self.assertEqual(plan["prune"], [])
         self.assertIn("verified_metadata", plan)
+
+
+    def test_collector_returns_stable_snapshot(self):
+        result = self.collect()
+        snapshot = result["snapshot"]
+
+        self.assertEqual(snapshot["release_id"], 100)
+        self.assertEqual(
+            snapshot["repository"], "example/disposable"
+        )
+
+        self.assertEqual(
+            set(snapshot["assets"]), set(self.remote)
+        )
+
+        for name, record in snapshot["assets"].items():
+            self.assertEqual(
+                record["sha256"], result["sha256"][name]
+            )
+            self.assertEqual(
+                record["size"], len(self.remote[name])
+            )
+
+    def test_collector_rejects_same_name_replacement(self):
+        self.replace_asset = True
+
+        with self.assertRaisesRegex(
+            ValueError, "snapshot changed"
+        ):
+            self.collect()
+
+    def test_collector_rejects_same_size_corruption(self):
+        self.corrupt_content = True
+
+        with self.assertRaisesRegex(
+            ValueError, "digest mismatch"
+        ):
+            self.collect()
+
+        self.assertNotIn("verify", self.operations)
+        self.assertNotIn("metadata", self.operations)
+
+    def test_collector_rejects_truncated_download(self):
+        self.truncate_content = True
+
+        with self.assertRaisesRegex(
+            ValueError, "size mismatch"
+        ):
+            self.collect()
+
+        self.assertNotIn("verify", self.operations)
+        self.assertNotIn("metadata", self.operations)
+
+    def test_combined_plan_contains_stable_snapshot(self):
+        plan = self.verified_plan()
+        metadata = plan["verified_metadata"]
+
+        self.assertEqual(
+            metadata["snapshot"]["release_id"], 100
+        )
+
+        self.assertEqual(
+            set(metadata["snapshot"]["assets"]),
+            {FILE, SIGNATURE},
+        )
+
+        self.assertTrue(plan["dry_run"])
+        self.assertEqual(plan["prune"], [])
+
+
+class HistorySnapshotTests(unittest.TestCase):
+    def setUp(self):
+        import hashlib
+
+        self.release = "arch-history-" + PACKAGE
+        self.payload = b"fixture-package"
+
+        self.document = {
+            "id": 100,
+            "tag_name": self.release,
+            "draft": False,
+        }
+
+        self.asset = {
+            "id": 200,
+            "name": FILE,
+            "size": len(self.payload),
+            "digest": (
+                "sha256:" +
+                hashlib.sha256(self.payload).hexdigest()
+            ),
+            "state": "uploaded",
+            "updated_at": "2026-11-20T22:23:07Z",
+        }
+
+        self.pages = [[self.asset]]
+        self.operations = []
+
+    def fake_run(self, *args):
+        self.operations.append(args)
+
+        if args == (
+            "gh", "api",
+            "repos/example/disposable/releases/tags/"
+            + self.release,
+        ):
+            return json.dumps(self.document)
+
+        if args == (
+            "gh", "api", "--paginate", "--slurp",
+            "repos/example/disposable/releases/"
+            + str(self.document["id"])
+            + "/assets?per_page=100",
+        ):
+            return json.dumps(self.pages)
+
+        self.fail("Unexpected command: " + repr(args))
+
+    def snapshot(self):
+        with (
+            patch.object(
+                publisher, "run", side_effect=self.fake_run
+            ),
+            patch.dict(os.environ, {
+                "GH_REPO": "example/disposable",
+            }),
+        ):
+            return publisher.history_snapshot(self.release)
+
+    def revalidate(self, expected):
+        with (
+            patch.object(
+                publisher, "run", side_effect=self.fake_run
+            ),
+            patch.dict(os.environ, {
+                "GH_REPO": "example/disposable",
+            }),
+        ):
+            return publisher.require_unchanged_snapshot(expected)
+
+    def test_snapshot_records_stable_identity(self):
+        snapshot = self.snapshot()
+
+        self.assertEqual(snapshot["release_id"], 100)
+        self.assertEqual(
+            snapshot["repository"], "example/disposable"
+        )
+
+        self.assertEqual(snapshot["assets"][FILE], {
+            "id": 200,
+            "size": len(self.payload),
+            "sha256": self.asset["digest"][7:],
+            "state": "uploaded",
+            "updated_at": self.asset["updated_at"],
+        })
+
+        self.assertEqual(len(self.operations), 2)
+
+    def test_empty_snapshot(self):
+        self.pages = [[]]
+        self.assertEqual(self.snapshot()["assets"], {})
+
+    def test_paginated_snapshot(self):
+        signature = dict(
+            self.asset,
+            id=201,
+            name=SIGNATURE,
+        )
+        self.pages.append([signature])
+
+        self.assertEqual(
+            set(self.snapshot()["assets"]),
+            {FILE, SIGNATURE},
+        )
+
+    def test_duplicate_name_rejected(self):
+        self.pages.append([dict(self.asset, id=201)])
+
+        with self.assertRaisesRegex(ValueError, "Duplicate"):
+            self.snapshot()
+
+    def test_duplicate_id_rejected(self):
+        self.pages.append([
+            dict(self.asset, name=SIGNATURE)
+        ])
+
+        with self.assertRaisesRegex(ValueError, "Duplicate"):
+            self.snapshot()
+
+    def test_invalid_release_identity_rejected(self):
+        for field, value in (
+            ("id", 0),
+            ("id", True),
+            ("tag_name", "arch-repo"),
+            ("draft", True),
+        ):
+            with self.subTest(field=field, value=value):
+                original = self.document[field]
+                self.document[field] = value
+
+                try:
+                    with self.assertRaisesRegex(
+                        ValueError, "release identity"
+                    ):
+                        self.snapshot()
+                finally:
+                    self.document[field] = original
+
+    def test_invalid_asset_metadata_rejected(self):
+        for field, value in (
+            ("id", 0),
+            ("id", True),
+            ("size", 0),
+            ("size", True),
+            ("name", "../escape"),
+            ("name", ".."),
+            ("digest", None),
+            ("digest", "sha256:invalid"),
+            ("state", "starter"),
+            ("updated_at", ""),
+        ):
+            with self.subTest(field=field, value=value):
+                original = self.asset[field]
+                self.asset[field] = value
+
+                try:
+                    with self.assertRaisesRegex(
+                        ValueError, "asset metadata"
+                    ):
+                        self.snapshot()
+                finally:
+                    self.asset[field] = original
+
+    def test_invalid_pagination_rejected(self):
+        for pages in ([], {}, [None]):
+            with self.subTest(pages=pages):
+                self.pages = pages
+
+                with self.assertRaises(ValueError):
+                    self.snapshot()
+
+    def test_unchanged_snapshot_accepted(self):
+        expected = self.snapshot()
+        self.assertEqual(
+            self.revalidate(expected), expected
+        )
+
+    def test_same_name_replacement_rejected(self):
+        expected = self.snapshot()
+        self.asset["id"] = 201
+
+        with self.assertRaisesRegex(ValueError, "snapshot changed"):
+            self.revalidate(expected)
+
+    def test_release_replacement_rejected(self):
+        expected = self.snapshot()
+        self.document["id"] = 101
+
+        with self.assertRaisesRegex(ValueError, "snapshot changed"):
+            self.revalidate(expected)
+
+    def test_modified_asset_rejected(self):
+        for field, value in (
+            ("size", 999),
+            ("digest", "sha256:" + "b" * 64),
+            ("updated_at", "2026-11-21T00:00:00Z"),
+        ):
+            with self.subTest(field=field):
+                expected = self.snapshot()
+                original = self.asset[field]
+                self.asset[field] = value
+
+                try:
+                    with self.assertRaisesRegex(
+                        ValueError, "snapshot changed"
+                    ):
+                        self.revalidate(expected)
+                finally:
+                    self.asset[field] = original
+
+    def test_removed_asset_rejected(self):
+        expected = self.snapshot()
+        self.pages = [[]]
+
+        with self.assertRaisesRegex(ValueError, "snapshot changed"):
+            self.revalidate(expected)
+
+    def test_added_asset_rejected(self):
+        expected = self.snapshot()
+
+        self.pages.append([
+            dict(self.asset, id=201, name=SIGNATURE)
+        ])
+
+        with self.assertRaisesRegex(ValueError, "snapshot changed"):
+            self.revalidate(expected)
+
+    def test_downloaded_content_verified(self):
+        record = self.snapshot()["assets"][FILE]
+
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / FILE
+            path.write_bytes(self.payload)
+
+            self.assertEqual(
+                publisher.verify_snapshot_asset(path, record),
+                record["sha256"],
+            )
+
+    def test_downloaded_size_mismatch_rejected(self):
+        record = self.snapshot()["assets"][FILE]
+
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / FILE
+            path.write_bytes(b"wrong-size")
+
+            with self.assertRaisesRegex(ValueError, "size mismatch"):
+                publisher.verify_snapshot_asset(path, record)
+
+    def test_same_size_corruption_rejected(self):
+        record = self.snapshot()["assets"][FILE]
+
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / FILE
+            path.write_bytes(b"x" * len(self.payload))
+
+            with self.assertRaisesRegex(ValueError, "digest mismatch"):
+                publisher.verify_snapshot_asset(path, record)
 
 
 if __name__ == "__main__":
