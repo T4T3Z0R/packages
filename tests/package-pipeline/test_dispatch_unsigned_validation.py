@@ -135,7 +135,11 @@ class DispatchTests(unittest.TestCase):
         self.assertIn('case "$REQUESTED_PUBLISH" in', source)
         self.assertIn('false)', source)
         self.assertIn('update=true', source)
-        self.assertIn('if [[ "$package_exists" == true ]]', source)
+        self.assertIn('remote_assets="$(', source)
+        self.assertIn(
+            'if grep -Fxq "$package_file" <<< "$remote_assets"; then',
+            source,
+        )
         self.assertIn('github.event_name == \'workflow_dispatch\'', source)
         self.assertNotIn('github.event_name == \'schedule\'', source)
 
