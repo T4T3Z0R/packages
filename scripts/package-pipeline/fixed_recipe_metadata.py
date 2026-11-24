@@ -10,7 +10,8 @@ import tempfile
 from pathlib import Path
 
 from fixed_recipe_selection import (
-    COMMIT, VERSION, SHA256, SOURCE_POLICIES, require,
+    COMMIT, VERSION, SOURCE_POLICIES, require,
+    CHECKSUM_POLICIES,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -113,6 +114,13 @@ def archive_url(package, version):
             f"syncthing-source-v{version}.tar.gz"
         )
 
+    if package == "moonlight-qt":
+        return (
+            "https://github.com/moonlight-stream/moonlight-qt"
+            f"/releases/download/v{version}/"
+            f"MoonlightSrc-{version}.tar.gz"
+        )
+
     raise ValueError("Unsupported archive source")
 
 
@@ -140,7 +148,8 @@ def archive_checksum(package, version):
             "Empty upstream source archive",
         )
 
-        digest = hashlib.sha256()
+        algorithm, _ = CHECKSUM_POLICIES[package]
+        digest = hashlib.new(algorithm)
 
         with target.open("rb") as stream:
             require(
@@ -273,14 +282,16 @@ def resolve(package, candidate, config):
     else:
         checksum = archive_checksum(package, version)
 
+    algorithm, pattern = CHECKSUM_POLICIES[package]
+
     require(
-        SHA256.fullmatch(checksum),
+        pattern.fullmatch(checksum),
         "Invalid resolved checksum",
     )
 
     result.update(
         pkgver=version,
-        sha256=checksum,
+        **{algorithm: checksum},
     )
 
     return result

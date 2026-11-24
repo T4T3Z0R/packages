@@ -20,6 +20,7 @@
     "ghostty-shell-integration": 2,
     "ghostty-terminfo": 2,
     "ghostty-nautilus": 2,
-    "ghostty-debug": 2
+    "ghostty-debug": 2,
+    "moonlight-qt-debug": 2
   }
 }

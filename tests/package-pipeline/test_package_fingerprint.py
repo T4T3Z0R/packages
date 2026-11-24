@@ -192,7 +192,7 @@ class FingerprintTests(unittest.TestCase):
 
     def test_unrecognized_package_rejected(self):
         with self.assertRaises(ValueError):
-            fingerprint(self.root, self.base, "moonlight-qt")
+            fingerprint(self.root, self.base, "unregistered-package")
 
     def test_missing_workflow_fails_closed(self):
         self.workflow_path.unlink()

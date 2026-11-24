@@ -74,6 +74,15 @@
       "recipe": "arch/gameshell/PKGBUILD.in",
       "status": "approved",
       "auto_publish": false
+    },
+    "moonlight-qt": {
+      "upstream": "moonlight-stream/moonlight-qt",
+      "source_ref": "v6.2.0",
+      "release_policy": "stable-tag",
+      "license": "GPL-3.0-or-later",
+      "recipe": "arch/moonlight-qt/PKGBUILD",
+      "status": "approved",
+      "auto_publish": false
     }
   }
 }

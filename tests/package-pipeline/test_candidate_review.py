@@ -72,7 +72,7 @@ class CandidateReviewTests(unittest.TestCase):
 
     def test_unknown_package_rejected(self):
         with self.assertRaises(ValueError):
-            plan([candidate("moonlight-qt")])
+            plan([candidate("unregistered-package")])
 
     def test_unknown_status_rejected(self):
         with self.assertRaises(ValueError):

@@ -212,7 +212,7 @@ jobs:
 
             fixed_pr_ready)
               case "$package" in
-                ghostty|keepassxc|syncthing|wezterm)
+                ghostty|keepassxc|syncthing|wezterm|moonlight-qt)
                   ;;
                 *)
                   echo "Unexpected fixed recipe" >&2

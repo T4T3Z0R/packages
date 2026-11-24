@@ -69,6 +69,7 @@ class SourceSelectionWriterTests(unittest.TestCase):
             "ghostty": "v9.9.9",
             "keepassxc": "9.9.9",
             "syncthing": "v9.9.9",
+            "moonlight-qt": "v9.9.9",
             "wezterm": "d" * 40,
         }
 
@@ -93,6 +94,8 @@ class SourceSelectionWriterTests(unittest.TestCase):
                         "20240203.110809.5046fc22"
                         ".r999.gddddddddd"
                     )
+                elif package == "moonlight-qt":
+                    metadata["sha512"] = "a" * 128
                 else:
                     metadata["sha256"] = "a" * 64
 

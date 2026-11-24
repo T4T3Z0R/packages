@@ -53,7 +53,7 @@ class CandidateWriteSelectionTests(unittest.TestCase):
 
     def test_unknown_package_rejected(self):
         with self.assertRaisesRegex(ValueError, "Unsupported"):
-            select(REPORT, "moonlight-qt", NEW)
+            select(REPORT, "unregistered-package", NEW)
 
     def test_unsafe_reference_rejected(self):
         with self.assertRaisesRegex(ValueError, "Invalid"):

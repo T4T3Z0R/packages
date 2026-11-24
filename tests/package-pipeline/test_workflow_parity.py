@@ -14,6 +14,7 @@ class WorkflowParityTests(unittest.TestCase):
             "publish-wezterm.yml",
             "publish-ghostty.yml",
             "publish-keepassxc.yml",
+            "publish-moonlight-qt.yml",
             "publish-syncthing.yml",
         )
 
@@ -197,6 +198,36 @@ class WorkflowParityTests(unittest.TestCase):
         self.assertNotIn("gh release delete-asset", source)
         self.assertNotIn("default: v1.2.1", source)
 
+
+    def test_moonlight_shared_pipeline(self):
+        source = (
+            ROOT / ".github/workflows/publish-moonlight-qt.yml"
+        ).read_text()
+
+        required = (
+            "PACKAGE_NAME: moonlight-qt",
+            "name: Build and validate unsigned Moonlight Qt",
+            "makepkg --noconfirm --cleanbuild",
+            "moonlight-qt-debug",
+            "name: Download exact validated candidate",
+            "name: Verify validated candidate",
+            "name: Sign approved packages",
+            "name: Send Pushover approval notification",
+            "name: arch-repo-publish",
+            "name: Refuse existing version collisions",
+            "scripts/package-pipeline/assemble-repository.sh",
+            "scripts/package-pipeline/publish-repository.sh",
+        )
+
+        for marker in required:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, source)
+
+        for forbidden in (
+            "--nocheck", "--skipinteg", "--skippgpcheck",
+            "gh release upload", "gh release delete-asset",
+        ):
+            self.assertNotIn(forbidden, source)
 
     def test_keepassxc_shared_pipeline(self):
         source = (

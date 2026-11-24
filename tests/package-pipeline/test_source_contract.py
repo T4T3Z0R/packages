@@ -20,7 +20,7 @@ MANIFEST = json.loads(
 
 class SourceContractTests(unittest.TestCase):
     def test_existing_registered_packages(self):
-        for name in ("ghostty", "keepassxc", "syncthing", "wezterm"):
+        for name in ("ghostty", "keepassxc", "syncthing", "wezterm", "moonlight-qt"):
             with self.subTest(package=name):
                 config = MANIFEST["packages"][name]
                 result = contract.verify(name, config)
@@ -137,6 +137,46 @@ class SourceContractTests(unittest.TestCase):
             "bash -n arch/ghostty/PKGBUILD",
             verify_block,
         )
+
+    def test_moonlight_invalid_sha512_rejected(self):
+        root, config, recipe = self.fixture("moonlight-qt")
+        source = recipe.read_text()
+
+        checksum = re.search(
+            r"^sha512sums=\('[0-9a-f]{128}'\)$",
+            source,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(checksum)
+
+        for replacement in (
+            "sha512sums=('SKIP')",
+            "sha512sums=('" + "a" * 64 + "')",
+            "sha512sums=($(echo unsafe))",
+            "",
+        ):
+            with self.subTest(replacement=replacement):
+                recipe.write_text(
+                    source.replace(checksum.group(0), replacement, 1)
+                )
+                with self.assertRaisesRegex(ValueError, "SHA-512"):
+                    contract.verify("moonlight-qt", config, root)
+
+    def test_moonlight_duplicate_sha512_rejected(self):
+        root, config, recipe = self.fixture("moonlight-qt")
+        recipe.write_text(
+            recipe.read_text()
+            + "\nsha512sums=('" + "a" * 128 + "')\n"
+        )
+        with self.assertRaisesRegex(ValueError, "SHA-512"):
+            contract.verify("moonlight-qt", config, root)
+
+    def test_moonlight_wrong_upstream_rejected(self):
+        root, config, recipe = self.fixture("moonlight-qt")
+        config["upstream"] = "other/moonlight-qt"
+
+        with self.assertRaises(ValueError):
+            contract.verify("moonlight-qt", config, root)
 
     def test_wrong_stable_version_rejected(self):
         root, config, recipe = self.fixture()

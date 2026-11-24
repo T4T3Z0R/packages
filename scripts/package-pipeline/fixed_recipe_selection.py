@@ -7,9 +7,13 @@ from resolve_candidate import compare_versions
 
 FIXED_PACKAGES = frozenset({
     "ghostty", "keepassxc", "syncthing", "wezterm",
+    "moonlight-qt",
 })
 
 SOURCE_POLICIES = {
+    "moonlight-qt": (
+        "moonlight-stream/moonlight-qt", "stable-tag"
+    ),
     "ghostty": (
         "ghostty-org/ghostty", "stable-git-tag"
     ),
@@ -25,6 +29,14 @@ SOURCE_POLICIES = {
 }
 
 SHA256 = re.compile(r"[0-9a-f]{64}")
+SHA512 = re.compile(r"[0-9a-f]{128}")
+
+CHECKSUM_POLICIES = {
+    "ghostty": ("sha256", SHA256),
+    "keepassxc": ("sha256", SHA256),
+    "syncthing": ("sha256", SHA256),
+    "moonlight-qt": ("sha512", SHA512),
+}
 COMMIT = re.compile(r"[0-9a-f]{40}")
 VERSION = re.compile(r"[0-9]+(?:[.][0-9]+){2,3}")
 PKGVER = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+_]*")
@@ -55,15 +67,27 @@ def replace_assignment(source, field, value):
     return updated
 
 
-def replace_source_checksum(source, checksum):
+def replace_source_checksum(
+    source, checksum, *, algorithm="sha256"
+):
+    require(
+        algorithm in ("sha256", "sha512"),
+        "Unsupported checksum algorithm",
+    )
+
+    length = 64 if algorithm == "sha256" else 128
+    field = algorithm + "sums"
+
     require(
         isinstance(checksum, str)
-        and SHA256.fullmatch(checksum),
-        "Missing or invalid upstream SHA-256",
+        and re.fullmatch(
+            rf"[0-9a-f]{{{length}}}", checksum
+        ),
+        f"Missing or invalid upstream {algorithm.upper()}",
     )
 
     declarations = re.findall(
-        r"^[ \t]*sha256sums[ \t]*=",
+        rf"^[ \t]*{field}[ \t]*=",
         source,
         re.MULTILINE,
     )
@@ -74,7 +98,7 @@ def replace_source_checksum(source, checksum):
     )
 
     pattern = re.compile(
-        r"^(sha256sums=\(')([0-9a-f]{64})(')",
+        rf"^({field}=\(')([0-9a-f]{{{length}}})(')",
         re.MULTILINE,
     )
 
@@ -193,10 +217,12 @@ def render_recipe(
         )
 
     else:
+        algorithm, _ = CHECKSUM_POLICIES[package]
+
         require(
             set(metadata) == {
                 "package", "candidate", "pkgver",
-                "sha256",
+                algorithm,
             },
             "Unexpected stable-source metadata fields",
         )
@@ -210,7 +236,9 @@ def render_recipe(
         )
 
         updated = replace_source_checksum(
-            source, metadata["sha256"]
+            source,
+            metadata[algorithm],
+            algorithm=algorithm,
         )
 
     require(

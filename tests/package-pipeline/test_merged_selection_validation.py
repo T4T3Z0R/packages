@@ -22,7 +22,7 @@ def fixture(package="noctalia-custom", old="c" * 40, new="d" * 40):
                           tracking_ref="refs/tags/latest")
     elif package == "noctalia-greeter-t4t3z0r":
         old_config["release_policy"] = "stable-git-tag"
-    elif package in ("ghostty", "keepassxc", "syncthing"):
+    elif package in ("ghostty", "keepassxc", "syncthing", "moonlight-qt"):
         old_config["release_policy"] = "stable-tag"
     elif package == "wezterm":
         old_config["release_policy"] = "development-commit"
@@ -59,7 +59,7 @@ def fixture(package="noctalia-custom", old="c" * 40, new="d" * 40):
 
 
 class MergedSelectionTests(unittest.TestCase):
-    def test_seven_packages_use_only_unsigned_dispatch_inputs(self):
+    def test_eight_packages_use_only_unsigned_dispatch_inputs(self):
         for package, old, new, expected_workflow, inputs in (
             ("gameshell", "c"*40, "d"*40, "publish-gameshell.yml",
              {"publish": False, "source_ref": "latest"}),
@@ -71,6 +71,7 @@ class MergedSelectionTests(unittest.TestCase):
             ("keepassxc", "2.8.0", "2.8.1", "publish-keepassxc.yml", {"publish": False}),
             ("syncthing", "v2.1.7", "v2.1.8", "publish-syncthing.yml", {"publish": False}),
             ("wezterm", "c"*40, "d"*40, "publish-wezterm.yml", {"publish": False}),
+            ("moonlight-qt", "v6.2.0", "v9.9.9", "publish-moonlight-qt.yml", {"publish": False}),
         ):
             with self.subTest(package=package):
                 result = plan(*fixture(package, old, new))
@@ -84,6 +85,7 @@ class MergedSelectionTests(unittest.TestCase):
         after = json.loads(
             (ROOT / "arch/packages/manifest.json").read_text()
         )
+        after["packages"].pop("moonlight-qt")
         before = copy.deepcopy(after)
         for name in (
             "noctalia-custom",
@@ -105,6 +107,7 @@ class MergedSelectionTests(unittest.TestCase):
         after = json.loads(
             (ROOT / "arch/packages/manifest.json").read_text()
         )
+        after["packages"].pop("moonlight-qt")
         before = copy.deepcopy(after)
         for name in (
             "noctalia-custom",
@@ -140,6 +143,54 @@ class MergedSelectionTests(unittest.TestCase):
         incomplete["packages"].pop("wezterm")
         with self.assertRaises(ValueError):
             changed_source(incomplete, after)
+
+    def test_moonlight_bootstrap_does_not_dispatch(self):
+        after = json.loads(
+            (ROOT / "arch/packages/manifest.json").read_text()
+        )
+        before = copy.deepcopy(after)
+        before["packages"].pop("moonlight-qt")
+
+        result = plan(fixture()[0], before, after, [])
+
+        self.assertEqual(
+            result["decision"], "bootstrap_registry_expansion"
+        )
+        self.assertFalse(result["validation_dispatched"])
+        self.assertFalse(result["publication_authorized"])
+
+    def test_moonlight_bootstrap_changes_fail_closed(self):
+        after = json.loads(
+            (ROOT / "arch/packages/manifest.json").read_text()
+        )
+        before = copy.deepcopy(after)
+        before["packages"].pop("moonlight-qt")
+
+        mutations = (
+            lambda m: m["packages"]["moonlight-qt"].update(
+                auto_publish=True
+            ),
+            lambda m: m["packages"]["moonlight-qt"].update(
+                source_ref="v9.9.9"
+            ),
+            lambda m: m["packages"]["moonlight-qt"].update(
+                upstream="other/moonlight-qt"
+            ),
+            lambda m: m["packages"]["ghostty"].update(
+                source_ref="v9.9.9"
+            ),
+            lambda m: m["packages"].pop("wezterm"),
+            lambda m: m["packages"].update(
+                unexpected={"status": "approved"}
+            ),
+        )
+
+        for mutate in mutations:
+            modified = copy.deepcopy(after)
+            mutate(modified)
+
+            with self.assertRaises(ValueError):
+                changed_source(before, modified)
 
     def test_no_source_change_is_noop(self):
         args = fixture()
