@@ -64,6 +64,96 @@ class SourceSelectionWriterTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     render(ORIGINAL, plan)
 
+    def test_all_fixed_recipe_packages(self):
+        candidates = {
+            "ghostty": "v9.9.9",
+            "keepassxc": "9.9.9",
+            "syncthing": "v9.9.9",
+            "wezterm": "d" * 40,
+        }
+
+        for package, candidate in candidates.items():
+            with self.subTest(package=package):
+                plan = fixture(package, candidate)
+                plan["status"] = "fixed_pr_ready"
+
+                config = MANIFEST["packages"][package]
+                original = (
+                    ROOT / config["recipe"]
+                ).read_text()
+
+                metadata = {
+                    "package": package,
+                    "candidate": candidate,
+                    "pkgver": candidate.removeprefix("v"),
+                }
+
+                if package == "wezterm":
+                    metadata["pkgver"] = (
+                        "20240203.110809.5046fc22"
+                        ".r999.gddddddddd"
+                    )
+                else:
+                    metadata["sha256"] = "a" * 64
+
+                updated, body, recipe = render(
+                    ORIGINAL, plan,
+                    recipe_source=original,
+                    metadata=metadata,
+                    compare=lambda old, new: -1,
+                )
+
+                expected = copy.deepcopy(MANIFEST)
+                expected["packages"][package][
+                    "source_ref"
+                ] = candidate
+
+                self.assertEqual(
+                    json.loads(updated), expected
+                )
+                self.assertNotEqual(recipe, original)
+                self.assertIn(
+                    "pkgver=" + metadata["pkgver"],
+                    recipe,
+                )
+                self.assertIn(plan["pr_marker"], body)
+                self.assertIn(
+                    "Requires human PR review", body
+                )
+                self.assertIn(
+                    "No signing or publication", body
+                )
+
+    def test_fixed_selection_requires_metadata(self):
+        plan = fixture("wezterm", "d" * 40)
+        plan["status"] = "fixed_pr_ready"
+
+        with self.assertRaisesRegex(
+            ValueError, "requires source and metadata"
+        ):
+            render(ORIGINAL, plan)
+
+    def test_generated_selection_rejects_metadata(self):
+        plan = fixture("gameshell", "d" * 40)
+
+        with self.assertRaisesRegex(
+            ValueError, "Unexpected generated-recipe"
+        ):
+            render(
+                ORIGINAL, plan,
+                recipe_source="unexpected",
+                metadata={},
+            )
+
+    def test_generated_selection_rejects_fixed_status(self):
+        plan = fixture("gameshell", "d" * 40)
+        plan["status"] = "fixed_pr_ready"
+
+        with self.assertRaisesRegex(
+            ValueError, "status mismatch"
+        ):
+            render(ORIGINAL, plan)
+
     def test_stale_manifest_rejected(self):
         plan = fixture("gameshell", "e" * 40)
         plan["selected"] = "f" * 40
@@ -97,6 +187,45 @@ class SourceSelectionWriterTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     render(ORIGINAL, plan)
 
+    def test_fixed_workflow_resolves_metadata_without_credentials(self):
+        source = (
+            ROOT / ".github/workflows"
+            / "review-package-candidate-approval.yml"
+        ).read_text()
+
+        self.assertIn(
+            "runuser -u selection-builder", source
+        )
+        self.assertIn("env -i", source)
+        self.assertIn("fixed_recipe_metadata.py", source)
+        self.assertIn(
+            '--metadata "$scratch/metadata.json"', source
+        )
+        self.assertIn('--recipe "$recipe"', source)
+        self.assertIn(
+            'verify_source_contract.py', source
+        )
+
+    def test_workflow_checks_exact_changed_files(self):
+        source = (
+            ROOT / ".github/workflows"
+            / "review-package-candidate-approval.yml"
+        ).read_text()
+
+        self.assertIn(
+            'paths=(arch/packages/manifest.json)',
+            source,
+        )
+        self.assertIn('paths+=("$recipe")', source)
+        self.assertIn('git add -- "${paths[@]}"', source)
+        self.assertIn(
+            'git diff --cached --name-only', source
+        )
+        self.assertIn(
+            'git diff --numstat -- arch/packages/manifest.json',
+            source,
+        )
+
     def test_writer_permissions_are_isolated(self):
         source = (
             ROOT / ".github/workflows"
@@ -112,6 +241,10 @@ class SourceSelectionWriterTests(unittest.TestCase):
         self.assertIn("pull-requests: write", writer)
         self.assertIn(
             "needs.evaluate.outputs.status == 'template_pr_ready'",
+            writer,
+        )
+        self.assertIn(
+            "needs.evaluate.outputs.status == 'fixed_pr_ready'",
             writer,
         )
         self.assertIn("--draft", writer)

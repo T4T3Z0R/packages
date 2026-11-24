@@ -7,6 +7,7 @@ on:
       - feature/shared-noctalia-custom
       - feature/shared-gameshell
       - feature/unified-release-lifecycle
+      - fix/fixed-recipe-source-selection
     paths:
       - "scripts/package-pipeline/**"
       - "tests/package-pipeline/**"
@@ -120,6 +121,8 @@ jobs:
           python -m unittest discover -s tests/package-pipeline -p 'test_candidate_approval_event.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_candidate_selection_handoff.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_candidate_selection_pr_writer.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_fixed_recipe_selection.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_fixed_recipe_metadata.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_merged_selection_validation.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_dispatch_unsigned_validation.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_release_approval_policy.py' -v
@@ -145,6 +148,147 @@ jobs:
           for package in ghostty keepassxc syncthing wezterm; do
             python scripts/package-pipeline/verify_source_contract.py --package "$package"
           done
+
+      - name: Verify native fixed-recipe metadata parity
+        run: |
+          set -euo pipefail
+
+          command -v makepkg
+          command -v vercmp
+          command -v curl
+          command -v runuser
+
+          scratch="$(mktemp -d)"
+          trap 'rm -rf -- "$scratch"' EXIT
+
+          useradd --create-home metadata-test
+
+          chmod 0711 "$scratch"
+          install -d -m 0755 "$scratch/input"
+
+          install -m 0644 \
+            scripts/package-pipeline/fixed_recipe_metadata.py \
+            scripts/package-pipeline/fixed_recipe_selection.py \
+            scripts/package-pipeline/verify_source_contract.py \
+            scripts/package-pipeline/resolve_candidate.py \
+            "$scratch/input/"
+
+          python3 - "$scratch/input" <<'PYTHON'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          output = Path(sys.argv[1])
+
+          manifest = json.loads(
+              Path("arch/packages/manifest.json").read_text()
+          )
+
+          expected = {}
+
+          for package in (
+              "ghostty", "keepassxc", "syncthing", "wezterm"
+          ):
+              config = manifest["packages"][package]
+              source = Path(config["recipe"]).read_text()
+
+              version = re.findall(
+                  r"^pkgver=([^\s]+)$",
+                  source,
+                  re.MULTILINE,
+              )
+
+              assert len(version) == 1, package
+
+              expected[package] = {
+                  "candidate": config["source_ref"],
+                  "pkgver": version[0],
+              }
+
+              if package != "wezterm":
+                  digest = re.findall(
+                      r"^sha256sums=\('([0-9a-f]{64})'",
+                      source,
+                      re.MULTILINE,
+                  )
+                  assert len(digest) == 1, package
+                  expected[package]["sha256"] = digest[0]
+
+          (output / "expected.json").write_text(
+              json.dumps(expected)
+          )
+          (output / "manifest.json").write_text(
+              json.dumps(manifest)
+          )
+          PYTHON
+
+          chmod 0644 "$scratch/input/"*.json
+
+          (
+            cd /home/metadata-test
+
+            runuser -u metadata-test -- \
+              env -i \
+              HOME=/home/metadata-test \
+              USER=metadata-test \
+              LOGNAME=metadata-test \
+              PATH=/usr/bin:/bin \
+              LANG=C.UTF-8 \
+              PYTHONPATH="$scratch/input" \
+              python3 - "$scratch/input" <<'PYTHON'
+          import json
+          import sys
+          from pathlib import Path
+
+          from fixed_recipe_metadata import (
+              archive_checksum,
+              keepassxc_checksum,
+              wezterm_version,
+          )
+
+          root = Path(sys.argv[1])
+          expected = json.loads(
+              (root / "expected.json").read_text()
+          )
+
+          for package, reference in expected.items():
+              version = reference["pkgver"]
+
+              if package == "wezterm":
+                  actual = wezterm_version(
+                      reference["candidate"]
+                  )
+
+                  assert actual == version, (
+                      package, actual, version
+                  )
+
+                  print(
+                      f"PASS: {package} version {actual}",
+                      flush=True,
+                  )
+                  continue
+
+              if package == "keepassxc":
+                  actual = keepassxc_checksum(version)
+              else:
+                  actual = archive_checksum(
+                      package, version
+                  )
+
+              assert actual == reference["sha256"], (
+                  package,
+                  actual,
+                  reference["sha256"],
+              )
+
+              print(
+                  f"PASS: {package} native source checksum",
+                  flush=True,
+              )
+          PYTHON
+          )
 
       - name: Run real-package integration tests
         run: python -m unittest discover -s tests/package-pipeline -p "test_integration.py" -v

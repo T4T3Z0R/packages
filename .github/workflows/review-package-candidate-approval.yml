@@ -104,7 +104,8 @@ jobs:
     if: >-
       github.event_name == 'issues' &&
       github.actor == 'T4T3Z0R' &&
-      needs.evaluate.outputs.status == 'template_pr_ready'
+      (needs.evaluate.outputs.status == 'template_pr_ready' ||
+      needs.evaluate.outputs.status == 'fixed_pr_ready')
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -124,7 +125,9 @@ jobs:
       - name: Install selection dependencies
         run: |
           set -euo pipefail
-          pacman -Syu --noconfirm --needed python git github-cli
+          pacman -Syu --noconfirm --needed python git github-cli curl
+          command -v makepkg
+          command -v runuser
           command -v vercmp
 
       - name: Checkout production source
@@ -168,20 +171,134 @@ jobs:
             --manifest "$scratch/main-manifest.json" \
             > "$scratch/initial-plan.json"
 
-          # The renderer refuses anything except an approved, eligible
-          # generated-recipe source-selection change.
+          # Resolve metadata using a fresh authorized selection plan.
+          status="$(
+            python3 -c '
+          import json, sys
+          print(json.load(open(sys.argv[1]))["status"])
+          ' "$scratch/initial-plan.json"
+          )"
+
+          package="$(
+            python3 -c '
+          import json, sys
+          print(json.load(open(sys.argv[1]))["package"])
+          ' "$scratch/initial-plan.json"
+          )"
+
+          candidate="$(
+            python3 -c '
+          import json, sys
+          print(json.load(open(sys.argv[1]))["candidate"])
+          ' "$scratch/initial-plan.json"
+          )"
+
+          paths=(arch/packages/manifest.json)
+          renderer_args=()
+
+          case "$status" in
+            template_pr_ready)
+              case "$package" in
+                gameshell|noctalia-custom|noctalia-greeter-t4t3z0r)
+                  ;;
+                *)
+                  echo "Unexpected generated recipe" >&2
+                  exit 1
+                  ;;
+              esac
+              ;;
+
+            fixed_pr_ready)
+              case "$package" in
+                ghostty|keepassxc|syncthing|wezterm)
+                  ;;
+                *)
+                  echo "Unexpected fixed recipe" >&2
+                  exit 1
+                  ;;
+              esac
+
+              recipe="arch/$package/PKGBUILD"
+
+              # Run metadata resolution as a dedicated unprivileged
+              # user, outside the checkout, without GitHub credentials.
+              useradd --create-home selection-builder
+
+              install -d -m 0755 \
+                "$scratch/metadata-input"
+
+              install -m 0644 \
+                scripts/package-pipeline/fixed_recipe_metadata.py \
+                scripts/package-pipeline/fixed_recipe_selection.py \
+                scripts/package-pipeline/verify_source_contract.py \
+                scripts/package-pipeline/resolve_candidate.py \
+                "$scratch/metadata-input/"
+
+              install -m 0644 \
+                "$scratch/main-manifest.json" \
+                "$scratch/metadata-input/manifest.json"
+
+              chmod 0711 "$scratch"
+
+              (
+                cd /home/selection-builder
+
+                runuser -u selection-builder -- \
+                env -i \
+                HOME=/home/selection-builder \
+                USER=selection-builder \
+                LOGNAME=selection-builder \
+                PATH=/usr/bin:/bin \
+                LANG=C.UTF-8 \
+                python3 \
+                "$scratch/metadata-input/fixed_recipe_metadata.py" \
+                --package "$package" \
+                --candidate "$candidate" \
+                --manifest "$scratch/metadata-input/manifest.json" \
+                > "$scratch/metadata.json"
+              )
+
+              paths+=("$recipe")
+
+              renderer_args+=(
+                --metadata "$scratch/metadata.json"
+                --recipe "$recipe"
+              )
+              ;;
+
+            *)
+              echo "Unexpected selection decision: $status" >&2
+              exit 1
+              ;;
+          esac
+
           python3 scripts/package-pipeline/candidate_selection_pr_writer.py \
             "$scratch/initial-plan.json" \
             --manifest arch/packages/manifest.json \
-            --body-file "$scratch/pr-body.md"
+            --body-file "$scratch/pr-body.md" \
+            "${renderer_args[@]}"
 
           python3 scripts/package-pipeline/validate_manifest.py
+
+          if [[ "$status" == fixed_pr_ready ]]; then
+            bash -n "$recipe"
+
+            python3 scripts/package-pipeline/verify_source_contract.py \
+              --package "$package"
+          fi
+
           git diff --check
 
-          test "$(git diff --name-only)" = \
-            arch/packages/manifest.json
-          test "$(git diff --numstat)" = \
+          # Exact changed-file set; no unrelated changes permitted.
+          diff -u \
+            <(printf '%s\n' "${paths[@]}" | LC_ALL=C sort) \
+            <(git diff --name-only | LC_ALL=C sort)
+
+          # The manifest must still change by precisely one line.
+          test "$(git diff --numstat -- arch/packages/manifest.json)" = \
             "$(printf '1\t1\tarch/packages/manifest.json')"
+
+          test -z "$(git ls-files --others --exclude-standard)"
 
           branch="$(
             python3 -c '
@@ -198,7 +315,11 @@ jobs:
           )"
 
           git switch -c "$branch"
-          git add -- arch/packages/manifest.json
+          git add -- "${paths[@]}"
+
+          diff -u \
+            <(printf '%s\n' "${paths[@]}" | LC_ALL=C sort) \
+            <(git diff --cached --name-only | LC_ALL=C sort)
           git diff --cached --check
 
           git -c user.name='github-actions[bot]' \
@@ -250,7 +371,8 @@ jobs:
             echo
             echo "$url"
             echo
-            echo 'Only the manifest source selection was changed.'
+            echo 'Authorized source-selection files:'
+            printf -- '- %s\\n' "${paths[@]}"
             echo 'Human PR review and merge remain required.'
             echo 'No unsigned build, signing, or publication was dispatched.'
           } >> "$GITHUB_STEP_SUMMARY"

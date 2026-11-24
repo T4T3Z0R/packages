@@ -12,6 +12,8 @@ from resolve_candidate import (
     STABLE_POLICIES, STABLE_TAG,
 )
 from select_package_validation import TEMPLATE_PACKAGES
+from fixed_recipe_selection import FIXED_PACKAGES, render_recipe
+from resolve_candidate import compare_versions
 
 
 def require(condition, message):
@@ -19,10 +21,15 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def render(manifest_text, decision):
+def render(
+    manifest_text, decision, *,
+    recipe_source=None, metadata=None,
+    compare=compare_versions,
+):
     require(isinstance(decision, dict), "Invalid approval plan")
-    require(decision.get("status") == "template_pr_ready",
-            "Selection is not eligible for automatic PR preparation")
+    require(decision.get("status") in (
+        "template_pr_ready", "fixed_pr_ready"
+    ), "Selection is not eligible for automatic PR preparation")
     require(decision.get("pr_created") is False, "PR already created")
     require(decision.get("validation_dispatched") is False,
             "Unexpected validation dispatch")
@@ -34,7 +41,29 @@ def render(manifest_text, decision):
     candidate = decision.get("candidate")
     number = decision.get("issue_number")
 
-    require(package in TEMPLATE_PACKAGES, "Unsupported recipe")
+    generated = package in TEMPLATE_PACKAGES
+    fixed = package in FIXED_PACKAGES
+
+    require(generated or fixed, "Unsupported recipe")
+    require(
+        decision["status"] == (
+            "template_pr_ready" if generated
+            else "fixed_pr_ready"
+        ),
+        "Recipe selection status mismatch",
+    )
+
+    if generated:
+        require(
+            recipe_source is None and metadata is None,
+            "Unexpected generated-recipe metadata",
+        )
+    else:
+        require(
+            isinstance(recipe_source, str)
+            and isinstance(metadata, dict),
+            "Fixed recipe requires source and metadata",
+        )
     require(type(number) is int and number > 0, "Invalid issue number")
     require(isinstance(selected, str), "Invalid selected ref")
     require(isinstance(candidate, str), "Invalid candidate ref")
@@ -67,8 +96,11 @@ def render(manifest_text, decision):
     require(config.get("status") == "approved", "Unapproved package")
     require(config.get("auto_publish") is False,
             "Automatic publication forbidden")
-    require(config.get("recipe") == f"arch/{package}/PKGBUILD.in",
-            "Unexpected recipe path")
+    recipe_name = "PKGBUILD.in" if generated else "PKGBUILD"
+    require(
+        config.get("recipe") == f"arch/{package}/{recipe_name}",
+        "Unexpected recipe path",
+    )
     require(config.get("source_ref") == selected,
             "Manifest selected source changed")
 
@@ -82,6 +114,18 @@ def render(manifest_text, decision):
 
     require(pattern.fullmatch(candidate) is not None,
             "Candidate does not match source policy")
+
+    updated_recipe = None
+
+    if fixed:
+        updated_recipe = render_recipe(
+            package,
+            config,
+            candidate,
+            recipe_source,
+            metadata,
+            compare=compare,
+        )
 
     changed = copy.deepcopy(manifest)
     changed["packages"][package]["source_ref"] = candidate
@@ -101,12 +145,19 @@ def render(manifest_text, decision):
         "",
         "## Safety",
         "",
-        "- Only the manifest source selection changes.",
+        (
+            "- Only the manifest source selection changes."
+            if generated else
+            "- Coordinated manifest and fixed recipe update."
+        ),
         "- Requires human PR review and merge.",
         "- No signing or publication is authorized.",
         "- Unsigned validation is a separate subsequent step.",
         "",
     ))
+
+    if fixed:
+        return text, body, updated_recipe
 
     return text, body
 
@@ -116,15 +167,54 @@ def main():
     parser.add_argument("plan", type=Path)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--body-file", type=Path, required=True)
+    parser.add_argument("--metadata", type=Path)
+    parser.add_argument("--recipe", type=Path)
     args = parser.parse_args()
 
     decision = json.loads(args.plan.read_text())
-    updated, body = render(args.manifest.read_text(), decision)
+
+    if decision.get("status") == "fixed_pr_ready":
+        package = decision.get("package")
+
+        require(package in FIXED_PACKAGES, "Unsupported recipe")
+        require(
+            args.metadata is not None and args.recipe is not None,
+            "Fixed selection requires metadata and recipe arguments",
+        )
+
+        expected = Path(
+            f"arch/{package}/PKGBUILD"
+        ).resolve()
+
+        require(
+            args.recipe.resolve() == expected
+            and not args.recipe.is_symlink(),
+            "Unexpected fixed recipe location",
+        )
+
+        updated, body, recipe = render(
+            args.manifest.read_text(),
+            decision,
+            recipe_source=args.recipe.read_text(),
+            metadata=json.loads(args.metadata.read_text()),
+        )
+
+        args.recipe.write_text(recipe)
+
+    else:
+        require(
+            args.metadata is None and args.recipe is None,
+            "Unexpected fixed-recipe arguments",
+        )
+
+        updated, body = render(
+            args.manifest.read_text(), decision
+        )
 
     args.manifest.write_text(updated)
     args.body_file.write_text(body)
 
-    print("PASS: Only manifest source selection prepared")
+    print("PASS: Guarded source selection prepared")
 
 
 if __name__ == "__main__":

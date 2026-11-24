@@ -52,12 +52,26 @@ def fixture(package="ghostty", selected="v1.4.0", candidate="v1.4.1"):
 
 
 class HandoffTests(unittest.TestCase):
-    def test_fixed_recipe_requires_coordinated_review(self):
-        e, issue, upstream, m = fixture()
-        result = plan(e, issue, upstream, [], m)
-        self.assertEqual(result["status"], "recipe_review_required")
-        self.assertFalse(result["pr_created"])
-        self.assertFalse(result["publication_authorized"])
+    def test_all_fixed_recipes_are_eligible(self):
+        for package, selected, candidate in (
+            ("ghostty", "v1.4.0", "v1.4.1"),
+            ("keepassxc", "2.8.0", "2.8.1"),
+            ("syncthing", "v2.1.7", "v2.1.8"),
+            ("wezterm", "a" * 40, "b" * 40),
+        ):
+            with self.subTest(package=package):
+                e, issue, upstream, m = fixture(
+                    package, selected, candidate
+                )
+                result = plan(e, issue, upstream, [], m)
+                self.assertEqual(result["status"], "fixed_pr_ready")
+                self.assertFalse(result["pr_created"])
+                self.assertFalse(result["validation_dispatched"])
+                self.assertFalse(result["publication_authorized"])
+                self.assertEqual(
+                    result["branch"],
+                    f"source-selection/issue-42-{package}",
+                )
 
     def test_three_generated_recipes_are_eligible(self):
         for package, selected, candidate in (
