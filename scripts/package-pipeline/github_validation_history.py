@@ -121,3 +121,53 @@ def run_evidence(api, repo, run_id):
     )
 
     return jobs, artifacts
+
+
+def run_attempt_evidence(api, repo, run_id, attempt_number):
+    """Read one exact workflow attempt and its complete job collection."""
+    if type(run_id) is not int or run_id <= 0:
+        raise ValueError("Invalid workflow run ID")
+    if type(attempt_number) is not int or attempt_number <= 0:
+        raise ValueError("Invalid workflow attempt number")
+
+    base = (
+        f"repos/{repo}/actions/runs/{run_id}"
+        f"/attempts/{attempt_number}"
+    )
+
+    run = api(base)
+
+    if (
+        not isinstance(run, dict)
+        or type(run.get("id")) is not int
+        or run["id"] != run_id
+        or type(run.get("run_attempt")) is not int
+        or run["run_attempt"] != attempt_number
+    ):
+        raise ValueError("Workflow attempt identity mismatch")
+
+    jobs = fetch_pages(api, f"{base}/jobs", "jobs")
+
+    for job in jobs:
+        if job.get("run_id") != run_id:
+            raise ValueError("Job belongs to another workflow run")
+
+        if (
+            "run_attempt" in job
+            and job["run_attempt"] != attempt_number
+        ):
+            raise ValueError("Job belongs to another workflow attempt")
+
+    return run, jobs
+
+
+def run_artifacts(api, repo, run_id):
+    """Read all artifacts for a workflow run, across attempts."""
+    if type(run_id) is not int or run_id <= 0:
+        raise ValueError("Invalid workflow run ID")
+
+    return fetch_pages(
+        api,
+        f"repos/{repo}/actions/runs/{run_id}/artifacts",
+        "artifacts",
+    )

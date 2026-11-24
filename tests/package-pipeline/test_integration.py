@@ -354,6 +354,75 @@ class RepositoryIntegrationTests(unittest.TestCase):
             (self.root / "repo-output/test-repo.db").exists()
         )
 
+
+    def test_existing_candidate_version_blocks_assembly(self):
+        old = self.fixture / "yazi-1.0-1-any.pkg.tar.zst"
+        old.unlink()
+        Path(str(old) + ".sig").unlink()
+
+        self.make_package("yazi", "2.0", self.fixture)
+
+        result = self.assemble()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Candidate package version already present",
+            result.stderr,
+        )
+        self.assertFalse(
+            (self.root / "archive-state.txt").exists()
+        )
+        self.assertFalse(
+            (self.root / "gh-mutation").exists()
+        )
+
+    def test_existing_split_package_version_blocks_assembly(self):
+        old = self.fixture / "yazi-extra-1.0-1-any.pkg.tar.zst"
+        old.unlink()
+        Path(str(old) + ".sig").unlink()
+
+        self.make_package("yazi-extra", "2.0", self.fixture)
+        extra = self.make_package(
+            "yazi-extra", "2.0",
+            self.root / "package-output",
+        )
+        self.env["ADDITIONAL_PACKAGE_FILES"] = extra.name
+
+        result = self.assemble()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Candidate package version already present",
+            result.stderr,
+        )
+        self.assertFalse(
+            (self.root / "archive-state.txt").exists()
+        )
+        self.assertFalse(
+            (self.root / "gh-mutation").exists()
+        )
+
+    def test_orphaned_existing_candidate_signature_blocks(self):
+        old = self.fixture / "yazi-1.0-1-any.pkg.tar.zst"
+        old.unlink()
+        Path(str(old) + ".sig").unlink()
+
+        existing = self.make_package(
+            "yazi", "2.0", self.fixture
+        )
+        existing.unlink()
+
+        result = self.assemble()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Candidate package version already present",
+            result.stderr,
+        )
+        self.assertFalse(
+            (self.root / "gh-mutation").exists()
+        )
+
     def test_successful_replacement(self):
         result = self.assemble()
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)

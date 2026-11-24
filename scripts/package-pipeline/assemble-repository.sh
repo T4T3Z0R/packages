@@ -184,6 +184,18 @@ for existing_pkg in "${existing_packages[@]}"; do
   package_owners["$existing_name"]="$existing_pkg"
 done
 
+# A serialized publisher must not reintroduce an already-published
+# package filename. Reject both complete and partial existing pairs.
+# This check runs after verification of existing repository signatures
+# and before any package displacement or archive staging.
+for new_file in "${candidate_files[@]}"; do
+  if [[ -e "repo-output/$new_file" ||
+        -e "repo-output/${new_file}.sig" ]]; then
+    echo "Candidate package version already present: $new_file" >&2
+    exit 1
+  fi
+done
+
 # Track the displaced package independently of archive staging.
 displaced_name=""
 declare -A displaced_by_name=()

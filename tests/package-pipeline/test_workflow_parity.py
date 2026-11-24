@@ -263,5 +263,31 @@ class WorkflowParityTests(unittest.TestCase):
             with self.subTest(workflow=path.name):
                 self.assertNotIn("-f publish=true", path.read_text())
 
+
+    def test_noctalia_source_ref_shell_safety(self):
+        source = (
+            ROOT / ".github/workflows/publish-noctalia-custom.yml"
+        ).read_text()
+
+        for name in ("Candidate summary", "Publication summary"):
+            with self.subTest(step=name):
+                marker = f"      - name: {name}" + chr(10)
+                self.assertEqual(source.count(marker), 1)
+
+                block = source.split(marker, 1)[1].split(
+                    chr(10) + "      - name:", 1
+                )[0]
+
+                self.assertIn(
+                    "SOURCE_REF: ${{ inputs.source_ref }}", block
+                )
+                self.assertIn("        run: |", block)
+
+                shell = block.split("        run: |", 1)[1]
+
+                self.assertIn('echo "- Requested source:', shell)
+                self.assertEqual(shell.count("${SOURCE_REF}"), 1)
+                self.assertNotIn("${{ inputs.source_ref }}", shell)
+
 if __name__ == "__main__":
     unittest.main()

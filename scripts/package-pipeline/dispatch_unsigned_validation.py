@@ -182,6 +182,22 @@ def main():
     require(read_main_sha() == revision,
             'Production main moved after signing policy review')
 
+    # Detect release-history changes during approval verification.
+    # This narrows the dispatch race but is not an atomic lock.
+    fresh_ledger = evaluate(
+        github_api, REPOSITORY, package, target,
+        lambda sha, name: historical_identity(root, sha, name))
+    require(isinstance(fresh_ledger, dict) and
+            fresh_ledger == ledger,
+            'Release history changed before dispatch')
+
+    fresh_request = request(
+        original_plan, manifest, paths, fresh_ledger['decision'])
+    require(fresh_request.get('request') == result['request'],
+            'Release request no longer authorized')
+    require(read_main_sha() == revision,
+            'Production main moved after final history check')
+
     subprocess.run(
         ['gh', 'api', '--method', 'POST',
          f'repos/{REPOSITORY}/actions/workflows/{result["workflow"]}/dispatches',

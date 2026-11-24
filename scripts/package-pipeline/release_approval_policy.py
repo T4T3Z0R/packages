@@ -51,7 +51,8 @@ def verify(api):
             isinstance(branches.get("branch_policies"), list) and
             len(branches["branch_policies"]) == 1 and
             isinstance(branches["branch_policies"][0], dict) and
-            branches["branch_policies"][0].get("name") == "main",
+            branches["branch_policies"][0].get("name") == "main" and
+            branches["branch_policies"][0].get("type") == "branch",
             "Signing environment must allow exactly main")
 
     return {

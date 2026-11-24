@@ -91,7 +91,7 @@ class ProtectedDispatchTests(unittest.TestCase):
                 patch.object(
                     dispatcher, "evaluate",
                     return_value={"decision": "needs_validation"}
-                ),
+                ) as history,
                 patch.object(
                     dispatcher, "verify_approval_policy",
                     side_effect=failure
@@ -114,9 +114,11 @@ class ProtectedDispatchTests(unittest.TestCase):
                 )
 
                 if not permitted:
+                    history.assert_called_once()
                     post.assert_not_called()
                     return
 
+                self.assertEqual(history.call_count, 2)
                 post.assert_called_once()
                 args, kwargs = post.call_args
 
@@ -137,6 +139,76 @@ class ProtectedDispatchTests(unittest.TestCase):
                 self.assertEqual(
                     payload["inputs"]["expected_revision"], REV
                 )
+
+
+    def test_changed_history_before_dispatch_fails_closed(self):
+        scenarios = (
+            {"decision": "in_flight", "history_count": 1},
+            {"decision": "needs_validation", "history_count": 1},
+            {"decision": "validated", "history_count": 0},
+        )
+
+        for latest in scenarios:
+            with self.subTest(latest=latest):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    event = root / "event.json"
+                    plan = root / "plan.json"
+
+                    event.write_text(json.dumps(EVENT))
+                    plan.write_text(json.dumps(PLAN))
+
+                    with (
+                        patch.dict(os.environ, {
+                            "GITHUB_SHA": REV,
+                            "GITHUB_STEP_SUMMARY": "",
+                        }),
+                        patch.object(dispatcher.sys, "argv", [
+                            "dispatcher", str(plan), str(event)
+                        ]),
+                        patch.object(
+                            dispatcher, "git", side_effect=fake_git
+                        ),
+                        patch.object(
+                            dispatcher, "read_main_sha",
+                            return_value=REV
+                        ),
+                        patch.object(
+                            dispatcher, "fresh_merge_plan",
+                            return_value=PLAN
+                        ),
+                        patch.object(
+                            dispatcher, "fingerprint",
+                            return_value="a" * 64
+                        ),
+                        patch.object(
+                            dispatcher, "evaluate",
+                            side_effect=[
+                                {
+                                    "decision": "needs_validation",
+                                    "history_count": 0,
+                                },
+                                latest,
+                            ],
+                        ) as history,
+                        patch.object(
+                            dispatcher, "verify_approval_policy"
+                        ) as policy,
+                        patch.object(
+                            dispatcher.subprocess, "run"
+                        ) as post,
+                        redirect_stdout(io.StringIO()),
+                    ):
+                        with self.assertRaisesRegex(
+                            ValueError, "Release history changed"
+                        ):
+                            dispatcher.main()
+
+                        self.assertEqual(history.call_count, 2)
+                        policy.assert_called_once_with(
+                            dispatcher.github_api
+                        )
+                        post.assert_not_called()
 
     def test_policy_rejection_prevents_dispatch(self):
         self.exercise(permitted=False)

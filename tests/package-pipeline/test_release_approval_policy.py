@@ -23,7 +23,7 @@ ENV = {
 }
 BRANCHES = {
     "total_count": 1,
-    "branch_policies": [{"name": "main"}],
+    "branch_policies": [{"name": "main", "type": "branch"}],
 }
 
 
@@ -81,15 +81,28 @@ class ApprovalPolicyTests(unittest.TestCase):
         for branches in (
             {"total_count": 0, "branch_policies": []},
             {"total_count": 2, "branch_policies": [
-                {"name": "main"}, {"name": "develop"}]},
+                {"name": "main", "type": "branch"}, {"name": "develop", "type": "branch"}]},
             {"total_count": 1, "branch_policies": [
-                {"name": "release"}]},
+                {"name": "release", "type": "branch"}]},
             {"total_count": 2, "branch_policies": [
-                {"name": "main"}]},
+                {"name": "main", "type": "branch"}]},
         ):
             with self.subTest(branches=branches):
                 with self.assertRaises(ValueError):
                     verify(api(branches=branches))
+
+    def test_rejects_tag_or_missing_branch_type(self):
+        for kind in ("tag", None, "branch-or-tag", ""):
+            with self.subTest(kind=kind):
+                config = copy.deepcopy(BRANCHES)
+
+                if kind is None:
+                    del config["branch_policies"][0]["type"]
+                else:
+                    config["branch_policies"][0]["type"] = kind
+
+                with self.assertRaises(ValueError):
+                    verify(api(branches=config))
 
     def test_api_failure_blocks(self):
         def unavailable(_endpoint):
