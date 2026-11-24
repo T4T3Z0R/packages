@@ -39,7 +39,7 @@
     },
     "wezterm": {
       "upstream": "wezterm/wezterm",
-      "source_ref": "ee6f3044d09f83f21a32aead8dac2bc2a32e7fcb",
+      "source_ref": "89e01990a5ad0b30e67d84d68b2fc4ad4eb71276",
       "release_policy": "development-commit",
       "license": "MIT",
       "recipe": "arch/wezterm/PKGBUILD",

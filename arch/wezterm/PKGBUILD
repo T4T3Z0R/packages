@@ -1,8 +1,8 @@
 # Maintainer:  Orhun Parmaksız <orhun@archlinux.org>
 
 pkgname=wezterm
-pkgver=20240203.110809.5046fc22.r982.gee6f3044d
-_commit=ee6f3044d09f83f21a32aead8dac2bc2a32e7fcb
+pkgver=20240203.110809.5046fc22.r985.g89e01990a
+_commit=89e01990a5ad0b30e67d84d68b2fc4ad4eb71276
 pkgrel=1
 pkgdesc="A GPU-accelerated cross-platform terminal emulator and multiplexer"
 arch=('x86_64')
