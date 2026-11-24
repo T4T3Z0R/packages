@@ -8,6 +8,7 @@ on:
       - feature/shared-gameshell
       - feature/unified-release-lifecycle
       - fix/fixed-recipe-source-selection
+      - feature/moonlight-qt
     paths:
       - "scripts/package-pipeline/**"
       - "tests/package-pipeline/**"
@@ -22,6 +23,7 @@ on:
       - ".github/workflows/publish-noctalia-custom.yml"
       - ".github/workflows/publish-gameshell.yml"
       - ".github/workflows/publish-wezterm.yml"
+      - ".github/workflows/publish-moonlight-qt.yml"
       - ".github/workflows/publish-ghostty.yml"
       - ".github/workflows/publish-keepassxc.yml"
       - ".github/workflows/publish-syncthing.yml"
@@ -32,6 +34,7 @@ on:
       - "arch/noctalia-greeter-t4t3z0r/**"
       - "arch/syncthing/**"
       - "arch/wezterm/**"
+      - "arch/moonlight-qt/**"
   pull_request:
     paths:
       - "scripts/package-pipeline/**"
@@ -47,6 +50,7 @@ on:
       - ".github/workflows/publish-noctalia-custom.yml"
       - ".github/workflows/publish-gameshell.yml"
       - ".github/workflows/publish-wezterm.yml"
+      - ".github/workflows/publish-moonlight-qt.yml"
       - ".github/workflows/publish-ghostty.yml"
       - ".github/workflows/publish-keepassxc.yml"
       - ".github/workflows/publish-syncthing.yml"
@@ -57,6 +61,7 @@ on:
       - "arch/noctalia-greeter-t4t3z0r/**"
       - "arch/syncthing/**"
       - "arch/wezterm/**"
+      - "arch/moonlight-qt/**"
 
 permissions:
   contents: read
@@ -145,7 +150,7 @@ jobs:
           python -m unittest discover -s tests/package-pipeline -p 'test_candidate_notification_io.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_scheduled_candidate_notification_workflow.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_source_contract.py' -v
-          for package in ghostty keepassxc syncthing wezterm; do
+          for package in ghostty keepassxc syncthing wezterm moonlight-qt; do
             python scripts/package-pipeline/verify_source_contract.py --package "$package"
           done
 
@@ -188,7 +193,8 @@ jobs:
           expected = {}
 
           for package in (
-              "ghostty", "keepassxc", "syncthing", "wezterm"
+              "ghostty", "keepassxc", "syncthing", "wezterm",
+              "moonlight-qt",
           ):
               config = manifest["packages"][package]
               source = Path(config["recipe"]).read_text()
@@ -207,13 +213,19 @@ jobs:
               }
 
               if package != "wezterm":
+                  algorithm = (
+                      "sha512" if package == "moonlight-qt"
+                      else "sha256"
+                  )
+                  length = 128 if algorithm == "sha512" else 64
                   digest = re.findall(
-                      r"^sha256sums=\('([0-9a-f]{64})'",
+                      rf"^{algorithm}sums=\('([0-9a-f]{{{length}}})'",
                       source,
                       re.MULTILINE,
                   )
                   assert len(digest) == 1, package
-                  expected[package]["sha256"] = digest[0]
+                  expected[package]["algorithm"] = algorithm
+                  expected[package]["checksum"] = digest[0]
 
           (output / "expected.json").write_text(
               json.dumps(expected)
@@ -277,10 +289,10 @@ jobs:
                       package, version
                   )
 
-              assert actual == reference["sha256"], (
+              assert actual == reference["checksum"], (
                   package,
                   actual,
-                  reference["sha256"],
+                  reference["checksum"],
               )
 
               print(

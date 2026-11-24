@@ -105,7 +105,7 @@ class ManifestTests(unittest.TestCase):
         self.check(data, True)
 
     def test_registered_packages_have_real_recipes(self):
-        for name in ("ghostty", "keepassxc", "syncthing", "wezterm"):
+        for name in ("ghostty", "keepassxc", "syncthing", "wezterm", "moonlight-qt"):
             with self.subTest(package=name):
                 package = self.original["packages"][name]
                 self.assertEqual(package["status"], "approved")

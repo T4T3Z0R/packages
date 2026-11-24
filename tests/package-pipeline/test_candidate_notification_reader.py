@@ -101,7 +101,7 @@ class ReaderTests(unittest.TestCase):
 
     def test_unknown_package_fails_closed(self):
         bad = issue()
-        bad["title"] = "Package candidate: moonlight-qt @ v1.0.0"
+        bad["title"] = "Package candidate: unregistered-package @ v1.0.0"
         with self.assertRaisesRegex(ValueError, "not approved"):
             inspect_outbox(MANIFEST, api_for([bad]))
 

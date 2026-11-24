@@ -23,6 +23,9 @@ CONTRACTS = {
     "keepassxc": PackageContract(
         "publish-keepassxc.yml",
         "Build and validate unsigned KeePassXC", "fixed"),
+    "moonlight-qt": PackageContract(
+        "publish-moonlight-qt.yml",
+        "Build and validate unsigned Moonlight Qt", "fixed"),
     "noctalia-custom": PackageContract(
         "publish-noctalia-custom.yml",
         "Validate unsigned candidate", "generated"),

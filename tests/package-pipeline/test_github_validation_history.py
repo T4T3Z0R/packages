@@ -143,7 +143,7 @@ class HistoryReaderTests(unittest.TestCase):
             validation_runs(
                 lambda url: None,
                 "T4T3Z0R/packages",
-                "moonlight-qt",
+                "unregistered-package",
             )
 
     def test_correct_workflow_endpoint(self):

@@ -242,7 +242,7 @@ class LedgerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             classify(
                 run, jobs, artifacts,
-                package="moonlight-qt",
+                package="unregistered-package",
                 target=FP,
                 fingerprint=lambda sha, package: FP,
             )

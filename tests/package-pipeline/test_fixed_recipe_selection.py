@@ -44,7 +44,11 @@ class FixedRecipeTests(unittest.TestCase):
                 "package": package,
                 "candidate": candidate,
                 "pkgver": "9.9.9",
-                "sha256": "b" * 64,
+                **(
+                    {"sha512": "b" * 128}
+                    if package == "moonlight-qt"
+                    else {"sha256": "b" * 64}
+                ),
             }
 
         return package, config, candidate, source, metadata
@@ -58,7 +62,7 @@ class FixedRecipeTests(unittest.TestCase):
     def test_all_fixed_recipes(self):
         for package in (
             "ghostty", "keepassxc",
-            "syncthing", "wezterm",
+            "syncthing", "wezterm", "moonlight-qt",
         ):
             with self.subTest(package=package):
                 args = self.fixture(package)
@@ -104,17 +108,46 @@ class FixedRecipeTests(unittest.TestCase):
                 else:
                     import re
 
+                    algorithm = (
+                        "sha512" if package == "moonlight-qt"
+                        else "sha256"
+                    )
+                    length = 128 if algorithm == "sha512" else 64
+
                     original = re.search(
-                        r"^sha256sums=\('([0-9a-f]{64})'",
+                        rf"^{algorithm}sums=\('([0-9a-f]{{{length}}})'",
                         source,
                         re.MULTILINE,
                     ).group(1)
 
                     restored = restored.replace(
-                        metadata["sha256"], original, 1
+                        metadata[algorithm], original, 1
                     )
 
                 self.assertEqual(restored, source)
+
+    def test_moonlight_invalid_sha512_rejected(self):
+        for checksum in ("SKIP", "a" * 64, "g" * 128, ""):
+            with self.subTest(checksum=checksum):
+                args = self.fixture("moonlight-qt")
+                args[4]["sha512"] = checksum
+                with self.assertRaises(ValueError):
+                    self.render(*args)
+
+    def test_moonlight_wrong_checksum_algorithm_rejected(self):
+        args = self.fixture("moonlight-qt")
+        del args[4]["sha512"]
+        args[4]["sha256"] = "a" * 64
+
+        with self.assertRaises(ValueError):
+            self.render(*args)
+
+    def test_moonlight_duplicate_checksum_rejected(self):
+        args = list(self.fixture("moonlight-qt"))
+        args[3] += "\nsha512sums=('" + "c" * 128 + "')\n"
+
+        with self.assertRaises(ValueError):
+            self.render(*args)
 
     def test_invalid_checksum_rejected(self):
         args = self.fixture("ghostty")

@@ -283,6 +283,14 @@ class RepositoryIntegrationTests(unittest.TestCase):
         )
         self.assert_family_update_rejected("keepassxc-debug")
 
+    def test_missing_existing_debug_companion_moonlight(self):
+        self.prepare_family_update(
+            "moonlight-qt",
+            existing_optional=("moonlight-qt-debug",),
+            omitted=("moonlight-qt-debug",),
+        )
+        self.assert_family_update_rejected("moonlight-qt-debug")
+
     def test_missing_existing_debug_companion_syncthing(self):
         self.prepare_family_update(
             "syncthing",

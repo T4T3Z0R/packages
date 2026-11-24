@@ -75,6 +75,29 @@ def verify(name, config, root=ROOT):
                 "ghostty: expected one literal pinned SHA-256 checksum"
             )
 
+    if name == "moonlight-qt":
+        if (
+            config["upstream"] != "moonlight-stream/moonlight-qt"
+            or policy != "stable-tag"
+            or selected != "v" + actual
+        ):
+            raise ValueError(
+                "moonlight-qt: unexpected source policy"
+            )
+
+        pinned = re.findall(
+            r"^sha512sums=\('[0-9a-f]{128}'\)$",
+            source, re.MULTILINE
+        )
+        declarations = re.findall(
+            r"^[ \t]*sha512sums[ \t]*=",
+            source, re.MULTILINE
+        )
+        if len(pinned) != 1 or len(declarations) != 1:
+            raise ValueError(
+                "moonlight-qt: expected one literal pinned SHA-512 checksum"
+            )
+
     pkgver = assignment(source, "pkgver")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+_]*", pkgver):
         raise ValueError(f"{name}: invalid pkgver")

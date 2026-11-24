@@ -56,7 +56,7 @@ class ReleaseContractTests(unittest.TestCase):
 
     def test_unknown_package_rejected(self):
         with self.assertRaises(ValueError):
-            workflow_file("moonlight-qt")
+            workflow_file("unregistered-package")
 
 
 if __name__ == "__main__":

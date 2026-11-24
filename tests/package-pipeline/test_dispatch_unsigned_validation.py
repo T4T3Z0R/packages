@@ -17,7 +17,7 @@ TEMPLATES = {
     'noctalia-greeter-t4t3z0r': ('publish-noctalia-greeter.yml',
                 {'publish': False, 'source_tag': MANIFEST['packages']['noctalia-greeter-t4t3z0r']['source_ref']}),
 }
-FIXED = ('ghostty', 'keepassxc', 'syncthing', 'wezterm')
+FIXED = ('ghostty', 'keepassxc', 'syncthing', 'wezterm', 'moonlight-qt')
 
 
 def approved_plan(package, inputs, workflow):
@@ -35,7 +35,7 @@ def paths_for(package):
 
 
 class DispatchTests(unittest.TestCase):
-    def test_all_seven_request_protected_approval(self):
+    def test_all_eight_request_protected_approval(self):
         options = dict(TEMPLATES)
         options.update({name: (f'publish-{name}.yml', {'publish': False})
                         for name in FIXED})

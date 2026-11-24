@@ -101,6 +101,59 @@ class MetadataTests(unittest.TestCase):
             hashlib.sha256(payload).hexdigest(),
         )
 
+    def test_moonlight_archive_url(self):
+        self.assertEqual(
+            metadata.archive_url("moonlight-qt", "9.9.9"),
+            "https://github.com/moonlight-stream/moonlight-qt"
+            "/releases/download/v9.9.9/MoonlightSrc-9.9.9.tar.gz",
+        )
+
+    def test_moonlight_archive_sha512(self):
+        import hashlib
+
+        payload = bytes([31, 139]) + b"fixture archive"
+
+        def download(args, **kwargs):
+            target = Path(args[args.index("--output") + 1])
+            target.write_bytes(payload)
+            return ""
+
+        with patch.object(metadata, "run", side_effect=download):
+            result = metadata.archive_checksum(
+                "moonlight-qt", "9.9.9"
+            )
+
+        self.assertEqual(result, hashlib.sha512(payload).hexdigest())
+
+    def test_moonlight_metadata_resolution(self):
+        with patch.object(
+            metadata, "archive_checksum", return_value="a" * 128
+        ) as archive:
+            result = metadata.resolve(
+                "moonlight-qt",
+                "v9.9.9",
+                MANIFEST["moonlight-qt"],
+            )
+
+        archive.assert_called_once_with("moonlight-qt", "9.9.9")
+        self.assertEqual(result, {
+            "package": "moonlight-qt",
+            "candidate": "v9.9.9",
+            "pkgver": "9.9.9",
+            "sha512": "a" * 128,
+        })
+
+    def test_moonlight_sha256_metadata_rejected(self):
+        with patch.object(
+            metadata, "archive_checksum", return_value="a" * 64
+        ):
+            with self.assertRaises(ValueError):
+                metadata.resolve(
+                    "moonlight-qt",
+                    "v9.9.9",
+                    MANIFEST["moonlight-qt"],
+                )
+
     def test_invalid_archive_rejected(self):
         def download(args, **kwargs):
             target = Path(

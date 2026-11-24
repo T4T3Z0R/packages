@@ -203,6 +203,9 @@ case "$PACKAGE_NAME" in
   keepassxc)
     optional_companions=(keepassxc-debug)
     ;;
+  moonlight-qt)
+    optional_companions=(moonlight-qt-debug)
+    ;;
   syncthing)
     required_companions=(
       syncthing-discosrv
