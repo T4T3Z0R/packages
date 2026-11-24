@@ -48,7 +48,7 @@
     },
     "noctalia-custom": {
       "upstream": "T4T3Z0R/noctalia",
-      "source_ref": "0a0dd757fe685b0ec7aa56943e3a9bd15a1d2df2",
+      "source_ref": "23080f658aa845feeda54cf72cb842700c8bad8e",
       "release_policy": "reviewed-commit",
       "tracking_ref": "refs/heads/custom",
       "license": "MIT AND Apache-2.0",
