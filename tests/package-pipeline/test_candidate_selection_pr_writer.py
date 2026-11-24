@@ -226,6 +226,27 @@ class SourceSelectionWriterTests(unittest.TestCase):
             source,
         )
 
+    def test_writer_installs_required_comparison_tools(self):
+        source = (
+            ROOT / ".github/workflows"
+            / "review-package-candidate-approval.yml"
+        ).read_text()
+
+        writer = source.split(
+            "  create-selection-pr:", 1
+        )[1]
+
+        install = writer.split(
+            "      - name: Install selection dependencies", 1
+        )[1].split("      - name:", 1)[0]
+
+        self.assertRegex(
+            install,
+            r"pacman -Syu[^\n]*\bdiffutils\b",
+        )
+
+        self.assertIn("vercmp diff cmp sort", install)
+
     def test_writer_permissions_are_isolated(self):
         source = (
             ROOT / ".github/workflows"
