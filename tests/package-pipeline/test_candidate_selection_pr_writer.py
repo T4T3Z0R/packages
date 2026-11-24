@@ -256,9 +256,15 @@ class SourceSelectionWriterTests(unittest.TestCase):
             / "review-package-candidate-approval.yml"
         ).read_text()
 
-        evaluate, writer = source.split(
+        evaluate, remaining = source.split(
             "\n  create-selection-pr:", 1
         )
+        writer, dispatcher = remaining.split(
+            "\n  dispatch-selection-ci:", 1
+        )
+        self.assertNotIn("actions: write", evaluate)
+        self.assertNotIn("actions: write", writer)
+        self.assertIn("actions: write", dispatcher)
         self.assertNotIn("contents: write", evaluate)
         self.assertNotIn("pull-requests: write", evaluate)
         self.assertIn("contents: write", writer)

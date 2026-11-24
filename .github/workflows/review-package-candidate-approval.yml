@@ -99,6 +99,10 @@ jobs:
           PYTHON
 
   create-selection-pr:
+    outputs:
+      pr_number: ${{ steps.selection.outputs.pr_number }}
+      branch: ${{ steps.selection.outputs.branch }}
+      revision: ${{ steps.selection.outputs.revision }}
     name: Prepare guarded draft source-selection PR
     needs: evaluate
     if: >-
@@ -139,6 +143,7 @@ jobs:
           persist-credentials: false
 
       - name: Recheck, prepare, and create draft PR
+        id: selection
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -368,6 +373,21 @@ jobs:
               --body-file "$scratch/pr-body.md"
           )"
 
+          revision="$(git rev-parse HEAD)"
+          pr_number="${url##*/}"
+
+          [[ "$pr_number" =~ ^[1-9][0-9]*$ ]]
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+
+          test "$url" = \
+            "https://github.com/T4T3Z0R/packages/pull/$pr_number"
+
+          {
+            echo "pr_number=$pr_number"
+            echo "branch=$branch"
+            echo "revision=$revision"
+          } >> "$GITHUB_OUTPUT"
+
           {
             echo '## Source-selection draft PR created'
             echo
@@ -380,3 +400,142 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           printf 'PASS: Draft source-selection PR: %s\n' "$url"
+
+
+  dispatch-selection-ci:
+    name: Dispatch guarded source-selection CI
+    needs: [evaluate, create-selection-pr]
+    if: >-
+      github.event_name == 'issues' &&
+      github.actor == 'T4T3Z0R' &&
+      needs.create-selection-pr.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      actions: write
+      contents: read
+      issues: read
+      pull-requests: read
+
+    steps:
+      - name: Verify generated PR and dispatch shared CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.create-selection-pr.outputs.pr_number }}
+          SELECTION_BRANCH: ${{ needs.create-selection-pr.outputs.branch }}
+          EXPECTED_REVISION: ${{ needs.create-selection-pr.outputs.revision }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$GITHUB_EVENT_NAME" = issues
+          test "$GITHUB_REPOSITORY" = T4T3Z0R/packages
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_ACTOR" = T4T3Z0R
+          test "$GITHUB_TRIGGERING_ACTOR" = T4T3Z0R
+          test "$GITHUB_RUN_ATTEMPT" = 1
+
+          command -v gh
+          command -v jq
+
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          [[ "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+
+          issue_number="$(jq -er '.issue.number' "$GITHUB_EVENT_PATH")"
+          [[ "$issue_number" =~ ^[1-9][0-9]*$ ]]
+
+          test "$(jq -er '.action' "$GITHUB_EVENT_PATH")" = labeled
+          test "$(jq -er '.label.name' "$GITHUB_EVENT_PATH")" = candidate:approved
+          test "$(jq -er '.sender.login' "$GITHUB_EVENT_PATH")" = T4T3Z0R
+
+          title="$(jq -er '.issue.title' "$GITHUB_EVENT_PATH")"
+
+          [[ "$title" =~ ^Package\ candidate:\ ([a-z0-9-]+)\ @\ ([A-Za-z0-9._+-]{1,100})$ ]]
+
+          package="${BASH_REMATCH[1]}"
+          candidate="${BASH_REMATCH[2]}"
+
+          case "$package" in
+            gameshell|ghostty|keepassxc|moonlight-qt|noctalia-custom|noctalia-greeter-t4t3z0r|syncthing|wezterm)
+              ;;
+            *)
+              echo 'Unsupported selection package.' >&2
+              exit 1
+              ;;
+          esac
+
+          test "$SELECTION_BRANCH" = \
+            "source-selection/issue-$issue_number-$package"
+
+          repo="$GITHUB_REPOSITORY"
+
+          test "$(gh api "repos/$repo/branches/main" --jq .commit.sha)" = "$GITHUB_SHA"
+
+          issue="$(gh api "repos/$repo/issues/$issue_number")"
+
+          jq -e --arg title "$title" '
+            .state == "open" and
+            .title == $title and
+            ([.labels[].name |
+              select(startswith("candidate:"))] ==
+              ["candidate:approved"])
+          ' <<< "$issue" >/dev/null
+
+          test "$(jq -r '.body' <<< "$issue")" = \
+            "$(jq -r '.issue.body' "$GITHUB_EVENT_PATH")"
+
+          pr="$(gh api "repos/$repo/pulls/$PR_NUMBER")"
+
+          marker="<!-- t4t3z0r:source-selection:v1 issue=$issue_number package=$package candidate=$candidate -->"
+
+          jq -e \
+            --arg repo "$repo" \
+            --arg branch "$SELECTION_BRANCH" \
+            --arg sha "$EXPECTED_REVISION" \
+            --arg base "$GITHUB_SHA" \
+            --arg marker "$marker" '
+              .state == "open" and
+              .draft == true and
+              .merged == false and
+              .user.login == "github-actions[bot]" and
+              .head.repo.full_name == $repo and
+              .base.repo.full_name == $repo and
+              .head.ref == $branch and
+              .head.sha == $sha and
+              .base.ref == "main" and
+              .base.sha == $base and
+              (.body | contains($marker))
+            ' <<< "$pr" >/dev/null
+
+          commit="$(gh api "repos/$repo/commits/$EXPECTED_REVISION")"
+
+          jq -e --arg parent "$GITHUB_SHA" '
+            (.parents | length) == 1 and
+            .parents[0].sha == $parent
+          ' <<< "$commit" >/dev/null
+
+          test "$(
+            gh api "repos/$repo/git/ref/heads/$SELECTION_BRANCH" \
+              --jq .object.sha
+          )" = "$EXPECTED_REVISION"
+
+          test "$(
+            gh api "repos/$repo/branches/main" --jq .commit.sha
+          )" = "$GITHUB_SHA"
+
+          gh workflow run test-package-pipeline.yml \
+            --repo "$repo" \
+            --ref "$SELECTION_BRANCH" \
+            -f expected_revision="$EXPECTED_REVISION"
+
+          {
+            echo '## Source-selection CI requested'
+            echo
+            echo "PR: #$PR_NUMBER"
+            echo "Revision: $EXPECTED_REVISION"
+            echo
+            echo 'Shared pipeline validation only.'
+            echo 'Human PR review and merge remain required.'
+            echo 'No package build, signing, or publication authorized.'
+          } >> "$GITHUB_STEP_SUMMARY"
