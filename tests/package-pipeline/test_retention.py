@@ -131,5 +131,169 @@ class RetentionPlannerTests(unittest.TestCase):
         self.assertTrue(plan["delete_live_after_publication"])
 
 
+class HistoryPruningTests(unittest.TestCase):
+    def setUp(self):
+        import runpy
+
+        self.module = runpy.run_path(str(
+            ROOT / "scripts/package-pipeline/"
+            "plan-history-pruning.py"
+        ))
+
+        self.planner = self.module["plan_pruning"]
+
+        self.versions = {
+            self.filename(version): version + "-1"
+            for version in ("2.6", "2.7", "2.8", "2.9", "2.10")
+        }
+
+        self.names = [
+            asset
+            for name in self.versions
+            for asset in (name, name + ".sig")
+        ]
+
+    def filename(self, version):
+        return (
+            "ghostty-" + version + "-1-x86_64.pkg.tar.zst"
+        )
+
+    def numeric_compare(self, left, right):
+        # Deliberately limited comparator for offline
+        # fixtures. Native vercmp is tested separately.
+        def key(value):
+            return tuple(
+                int(part)
+                for part in value.replace("-", ".").split(".")
+            )
+
+        return (key(left) > key(right)) - (key(left) < key(right))
+
+    def plan(self, **overrides):
+        args = {
+            "package": "ghostty",
+            "names": self.names,
+            "versions": self.versions,
+            "protected": self.filename("2.7"),
+            "retain": 3,
+            "compare": self.numeric_compare,
+        }
+
+        args.update(overrides)
+        return self.planner(**args)
+
+    def test_pruning_preserves_protected_version(self):
+        plan = self.plan()
+
+        self.assertEqual(
+            [pair["package"] for pair in plan["keep"]],
+            [
+                self.filename("2.10"),
+                self.filename("2.9"),
+                self.filename("2.7"),
+            ],
+        )
+
+        self.assertEqual(
+            [pair["package"] for pair in plan["prune"]],
+            [
+                self.filename("2.6"),
+                self.filename("2.8"),
+            ],
+        )
+
+        for pair in plan["prune"]:
+            self.assertEqual(
+                pair["signature"], pair["package"] + ".sig"
+            )
+
+        self.assertTrue(plan["dry_run"])
+
+    def test_under_limit_prunes_nothing(self):
+        plan = self.plan(retain=6)
+        self.assertEqual(plan["prune"], [])
+        self.assertEqual(len(plan["keep"]), 5)
+
+    def test_exact_limit_prunes_nothing(self):
+        self.assertEqual(self.plan(retain=5)["prune"], [])
+
+    def test_single_slot_preserves_protected_version(self):
+        plan = self.plan(retain=1)
+
+        self.assertEqual(
+            [pair["package"] for pair in plan["keep"]],
+            [self.filename("2.7")],
+        )
+
+        self.assertEqual(len(plan["prune"]), 4)
+
+    def test_missing_signature_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Incomplete"):
+            self.plan(names=self.names[:-1])
+
+    def test_orphan_signature_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Incomplete"):
+            self.plan(names=self.names[1:])
+
+    def test_duplicate_asset_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Duplicate"):
+            self.plan(names=self.names + [self.names[0]])
+
+    def test_unrelated_asset_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Unexpected"):
+            self.plan(names=self.names + ["unrelated.txt"])
+
+    def test_protected_version_missing_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Protected"):
+            self.plan(protected=self.filename("9.0"))
+
+    def test_zero_retention_rejected(self):
+        with self.assertRaisesRegex(ValueError, "positive"):
+            self.plan(retain=0)
+
+    def test_missing_metadata_rejected(self):
+        with self.assertRaisesRegex(ValueError, "inventory"):
+            self.plan(versions={})
+
+    def test_conflicting_metadata_rejected(self):
+        versions = dict(self.versions)
+        versions[self.filename("2.10")] = "9.0-1"
+
+        with self.assertRaisesRegex(ValueError, "disagrees"):
+            self.plan(versions=versions)
+
+    def test_ambiguous_versions_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Ambiguous"):
+            self.plan(compare=lambda left, right: 0)
+
+    def test_native_vercmp_ordering(self):
+        import shutil
+
+        if not shutil.which("vercmp"):
+            self.skipTest("Native vercmp unavailable")
+
+        compare = self.module["compare_versions"]
+
+        self.assertGreater(compare("2.10-1", "2.9-1"), 0)
+        self.assertGreater(compare("2.9-2", "2.9-1"), 0)
+        self.assertGreater(compare("1:1.0-1", "9.0-1"), 0)
+
+        plan = self.plan(compare=compare)
+        self.assertEqual(
+            plan["keep"][0]["package"],
+            self.filename("2.10"),
+        )
+
+        versions = dict(self.versions)
+        versions[self.filename("2.6")] = "1:2.6-1"
+
+        plan = self.plan(compare=compare, versions=versions)
+
+        self.assertEqual(
+            plan["keep"][0]["package"],
+            self.filename("2.6"),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
