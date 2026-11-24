@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "packages": {
+    "yazi": {
+      "upstream": "sxyazi/yazi",
+      "source_ref": "v26.9.1",
+      "release_policy": "stable-tag",
+      "license": "MIT",
+      "recipe": "arch/packages/yazi/PKGBUILD.in",
+      "status": "candidate",
+      "auto_publish": false
+    },
+    "ghostty": {
+      "upstream": "ghostty-org/ghostty",
+      "source_ref": "v1.4.0",
+      "release_policy": "stable-git-tag",
+      "license": "MIT",
+      "recipe": "arch/ghostty/PKGBUILD",
+      "status": "approved",
+      "auto_publish": false
+    },
+    "keepassxc": {
+      "upstream": "keepassxreboot/keepassxc",
+      "source_ref": "2.8.0",
+      "release_policy": "stable-tag",
+      "license": "GPL-3.0-only",
+      "recipe": "arch/keepassxc/PKGBUILD",
+      "status": "approved",
+      "auto_publish": false
+    },
+    "syncthing": {
+      "upstream": "syncthing/syncthing",
+      "source_ref": "v2.1.7",
+      "release_policy": "stable-tag",
+      "license": "MPL-2.0",
+      "recipe": "arch/syncthing/PKGBUILD",
+      "status": "approved",
+      "auto_publish": false
+    },
+    "wezterm": {
+      "upstream": "wezterm/wezterm",
+      "source_ref": "ee6f3044d09f83f21a32aead8dac2bc2a32e7fcb",
+      "release_policy": "development-commit",
+      "license": "MIT",
+      "recipe": "arch/wezterm/PKGBUILD",
+      "status": "approved",
+      "auto_publish": false
+    },
+    "noctalia-custom": {
+      "upstream": "T4T3Z0R/noctalia",
+      "source_ref": "0a0dd757fe685b0ec7aa56943e3a9bd15a1d2df2",
+      "release_policy": "reviewed-commit",
+      "tracking_ref": "refs/heads/custom",
+      "license": "MIT AND Apache-2.0",
+      "recipe": "arch/noctalia-custom/PKGBUILD.in",
+      "status": "approved",
+      "auto_publish": false
+    },
+    "noctalia-greeter-t4t3z0r": {
+      "upstream": "noctalia-dev/noctalia-greeter",
+      "source_ref": "v1.7.1",
+      "release_policy": "stable-git-tag",
+      "license": "MIT",
+      "recipe": "arch/noctalia-greeter-t4t3z0r/PKGBUILD.in",
+      "status": "approved",
+      "auto_publish": false
+    },
+    "gameshell": {
+      "upstream": "phyver/GameShell",
+      "source_ref": "63ae30982cf28ec7de1a4de23b85d15eccc031d8",
+      "release_policy": "development-commit",
+      "tracking_ref": "refs/tags/latest",
+      "license": "GPL-3.0-only",
+      "recipe": "arch/gameshell/PKGBUILD.in",
+      "status": "approved",
+      "auto_publish": false
+    }
+  }
+}

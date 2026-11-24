@@ -83,9 +83,9 @@ class MergedSelectionTests(unittest.TestCase):
 
     def test_exact_bootstrap_does_not_dispatch(self):
         after = json.loads(
-            (ROOT / "arch/packages/manifest.json").read_text()
+            (ROOT / "tests/package-pipeline/fixtures"
+             / "bootstrap-seven-packages.json").read_text()
         )
-        after["packages"].pop("moonlight-qt")
         before = copy.deepcopy(after)
         for name in (
             "noctalia-custom",
@@ -105,9 +105,9 @@ class MergedSelectionTests(unittest.TestCase):
 
     def test_bootstrap_changes_fail_closed(self):
         after = json.loads(
-            (ROOT / "arch/packages/manifest.json").read_text()
+            (ROOT / "tests/package-pipeline/fixtures"
+             / "bootstrap-seven-packages.json").read_text()
         )
-        after["packages"].pop("moonlight-qt")
         before = copy.deepcopy(after)
         for name in (
             "noctalia-custom",
@@ -146,7 +146,8 @@ class MergedSelectionTests(unittest.TestCase):
 
     def test_moonlight_bootstrap_does_not_dispatch(self):
         after = json.loads(
-            (ROOT / "arch/packages/manifest.json").read_text()
+            (ROOT / "tests/package-pipeline/fixtures"
+             / "bootstrap-moonlight.json").read_text()
         )
         before = copy.deepcopy(after)
         before["packages"].pop("moonlight-qt")
@@ -161,7 +162,8 @@ class MergedSelectionTests(unittest.TestCase):
 
     def test_moonlight_bootstrap_changes_fail_closed(self):
         after = json.loads(
-            (ROOT / "arch/packages/manifest.json").read_text()
+            (ROOT / "tests/package-pipeline/fixtures"
+             / "bootstrap-moonlight.json").read_text()
         )
         before = copy.deepcopy(after)
         before["packages"].pop("moonlight-qt")

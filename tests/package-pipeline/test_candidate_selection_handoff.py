@@ -170,7 +170,14 @@ class HandoffTests(unittest.TestCase):
         self.assertIn("GITHUB_RUN_ATTEMPT", workflow)
         self.assertNotIn("contents: write", evaluate)
         self.assertNotIn("gh pr create", evaluate)
-        self.assertNotIn("gh workflow run", workflow)
+        pre_dispatch, dispatcher = workflow.split(
+            "\n  dispatch-selection-ci:", 1
+        )
+        self.assertNotIn("gh workflow run", pre_dispatch)
+        self.assertNotIn("actions: write", pre_dispatch)
+        self.assertIn("actions: write", dispatcher)
+        self.assertNotIn("contents: write", dispatcher)
+        self.assertNotIn("pull-requests: write", dispatcher)
 
 
 if __name__ == "__main__":
