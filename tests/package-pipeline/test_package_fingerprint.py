@@ -32,11 +32,15 @@ class FingerprintTests(unittest.TestCase):
         self.workflow_path = (
             self.root / ".github/workflows/publish-ghostty.yml"
         )
+        self.pipeline_path = (
+            self.root / "scripts/package-pipeline/release_approval_policy.py"
+        )
 
         for path in (
             self.manifest_path,
             self.recipe_path,
             self.workflow_path,
+            self.pipeline_path,
         ):
             path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -50,6 +54,7 @@ class FingerprintTests(unittest.TestCase):
         self.write_manifest()
         self.recipe_path.write_text("pkgver=1.4.0\n")
         self.workflow_path.write_text("name: Ghostty\n")
+        self.pipeline_path.write_text("POLICY = 1\n")
 
         self.base = self.commit("baseline")
 
@@ -113,6 +118,62 @@ class FingerprintTests(unittest.TestCase):
         revision = self.commit("workflow update")
         self.assertNotEqual(
             before, fingerprint(self.root, revision, "ghostty")
+        )
+
+
+    def test_shared_pipeline_change_changes_fingerprint(self):
+        before = fingerprint(self.root, self.base, "ghostty")
+
+        self.pipeline_path.write_text("POLICY = 2\n")
+        revision = self.commit("update shared release control")
+
+        self.assertNotEqual(
+            before, fingerprint(self.root, revision, "ghostty")
+        )
+
+    def test_new_shared_script_changes_fingerprint(self):
+        before = fingerprint(self.root, self.base, "ghostty")
+
+        extra = self.pipeline_path.with_name(
+            "dispatch_unsigned_validation.py"
+        )
+        extra.write_text("# New shared release control\n")
+        revision = self.commit("add shared release control")
+
+        self.assertNotEqual(
+            before, fingerprint(self.root, revision, "ghostty")
+        )
+
+    def test_missing_shared_pipeline_fails_closed(self):
+        self.pipeline_path.unlink()
+        revision = self.commit("remove shared pipeline")
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            fingerprint(self.root, revision, "ghostty")
+
+    def test_unrelated_test_change_preserves_fingerprint(self):
+        before = fingerprint(self.root, self.base, "ghostty")
+
+        path = self.root / "tests/package-pipeline/test_example.py"
+        path.parent.mkdir(parents=True)
+        path.write_text("# Test-only change\n")
+        revision = self.commit("add unrelated test")
+
+        self.assertEqual(
+            before, fingerprint(self.root, revision, "ghostty")
+        )
+
+    def test_historical_fingerprint_uses_historical_tree(self):
+        original = fingerprint(self.root, self.base, "ghostty")
+
+        self.pipeline_path.write_text("POLICY = 2\n")
+        revision = self.commit("update pipeline after validation")
+
+        self.assertEqual(
+            original, fingerprint(self.root, self.base, "ghostty")
+        )
+        self.assertNotEqual(
+            original, fingerprint(self.root, revision, "ghostty")
         )
 
     def test_unapproved_package_rejected(self):
