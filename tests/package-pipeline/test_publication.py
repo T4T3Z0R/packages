@@ -35,7 +35,14 @@ fail = os.environ.get("TEST_FAIL_OP", "")
 if fail and (operation == fail or operation.startswith(fail)):
     sys.exit(17)
 if operation == "inventory":
-    print("obsolete.pkg.tar.zst")
+    log = Path(os.environ["TEST_GH_LOG"]).read_text().splitlines()
+    deleted = "delete:obsolete.pkg.tar.zst" in log
+
+    if (
+        not deleted
+        or os.environ.get("TEST_FINAL_STALE_ASSET")
+    ):
+        print("obsolete.pkg.tar.zst")
     omit = os.environ.get("TEST_OMIT_ASSET", "")
     for asset in os.environ["TEST_EXPECTED_ASSETS"].split(","):
         if asset != omit:
@@ -487,6 +494,246 @@ class PublicationTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Unexpected non-package release asset", result.stderr)
         self.assertFalse(any(op.startswith("delete:") for op in self.operations()))
+
+    def setup_pruning_publication(self, batch=False):
+        import json
+
+        if batch:
+            extra = self.setup_batch_publication()
+            targets = [
+                ("yazi", PACKAGE, "yazi-1.0-1-any.pkg.tar.zst"),
+                (
+                    "wezterm-debug", extra,
+                    "wezterm-debug-1.0-1-any.pkg.tar.zst",
+                ),
+            ]
+        else:
+            targets = [
+                ("yazi", PACKAGE, "yazi-1.0-1-any.pkg.tar.zst"),
+            ]
+
+        archive = self.root / "archive-output"
+        archive.mkdir()
+
+        state = ["batch-v2"] if batch else []
+
+        for name, candidate, previous in targets:
+            state.extend((name, candidate, previous))
+            (archive / previous).write_bytes(b"fixture-package")
+            (archive / (previous + ".sig")).write_bytes(
+                b"fixture-signature"
+            )
+
+        (self.root / "archive-state.txt").write_text(
+            "\n".join(state) + "\n"
+        )
+
+        self.env["SIGNING_SUBKEY"] = "A" * 40
+        self.env["TEST_PRUNE_TARGETS"] = json.dumps({
+            name: previous
+            for name, candidate, previous in targets
+        })
+
+        self.env["TEST_REAL_PYTHON"] = sys.executable
+
+        shim = self.root / "bin" / "python3"
+
+        shim.write_text(
+            """#!/usr/bin/env bash
+case "${1:-}" in
+  */publication-archive-gate.py)
+    shift
+    exec "$TEST_REAL_PYTHON" -c '
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+name = args[args.index("--package") + 1]
+targets = json.loads(os.environ["TEST_PRUNE_TARGETS"])
+assert name in targets
+print(json.dumps({
+    "gate_passed": True,
+    "displaced": True,
+    "history_verified": (
+        os.environ.get("TEST_SKIP_HISTORY") != name
+    ),
+}))
+' "$@"
+    ;;
+  */publish-history.py)
+    shift
+    exec "$TEST_REAL_PYTHON" -c '
+import json, os, sys
+args = sys.argv[1:]
+name = args[args.index("--package") + 1]
+protected = args[args.index("--protected") + 1]
+targets = json.loads(os.environ["TEST_PRUNE_TARGETS"])
+assert "--apply-pruning" in args
+assert protected == targets[name]
+assert args[args.index("--fingerprint") + 1] == "A" * 40
+with open(os.environ["TEST_GH_LOG"], "a") as stream:
+    stream.write("prune:" + name + ":" + protected + "\\n")
+if os.environ.get("TEST_PRUNE_FAIL") == name:
+    sys.exit(17)
+print(json.dumps({
+    "state": os.environ.get("TEST_PRUNE_RESULT", "complete"),
+    "deleted": 2,
+    "recovered": False,
+}))
+' "$@"
+    ;;
+esac
+exec "$TEST_REAL_PYTHON" "$@"
+"""
+        )
+
+        shim.chmod(0o755)
+        return targets
+
+    def pruning_operations(self):
+        return [
+            op for op in self.operations()
+            if op.startswith("prune:")
+        ]
+
+    def test_pruning_follows_verified_live_cleanup(self):
+        targets = self.setup_pruning_publication()
+        result = self.execute()
+
+        self.assertEqual(
+            result.returncode, 0,
+            result.stderr + result.stdout,
+        )
+
+        name, candidate, previous = targets[0]
+
+        self.assertEqual(
+            self.operations()[4:],
+            [
+                "inventory",
+                "delete:obsolete.pkg.tar.zst",
+                "inventory",
+                "prune:" + name + ":" + previous,
+            ],
+        )
+
+    def test_split_packages_pruned_independently(self):
+        targets = self.setup_pruning_publication(batch=True)
+        result = self.execute()
+
+        self.assertEqual(
+            result.returncode, 0,
+            result.stderr + result.stdout,
+        )
+
+        self.assertEqual(
+            self.pruning_operations(),
+            [
+                "prune:" + name + ":" + previous
+                for name, candidate, previous in targets
+            ],
+        )
+
+    def test_unretained_package_not_pruned(self):
+        targets = self.setup_pruning_publication(batch=True)
+        self.env["TEST_SKIP_HISTORY"] = "yazi"
+
+        result = self.execute()
+
+        self.assertEqual(
+            result.returncode, 0,
+            result.stderr + result.stdout,
+        )
+
+        name, candidate, previous = targets[1]
+
+        self.assertEqual(
+            self.pruning_operations(),
+            ["prune:" + name + ":" + previous],
+        )
+
+    def test_no_verified_history_skips_pruning(self):
+        self.setup_pruning_publication()
+        self.env["TEST_SKIP_HISTORY"] = "yazi"
+
+        result = self.execute()
+
+        self.assertEqual(
+            result.returncode, 0,
+            result.stderr + result.stdout,
+        )
+
+        self.assertEqual(self.pruning_operations(), [])
+        self.assertEqual(
+            self.operations().count("inventory"), 1
+        )
+
+    def test_failed_live_database_upload_blocks_pruning(self):
+        self.setup_pruning_publication()
+
+        result = self.execute("upload:t4t3z0r.db")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.pruning_operations(), [])
+
+    def test_failed_live_cleanup_blocks_pruning(self):
+        self.setup_pruning_publication()
+
+        result = self.execute("delete:")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.pruning_operations(), [])
+
+    def test_final_live_inventory_mismatch_blocks_pruning(self):
+        self.setup_pruning_publication()
+        self.env["TEST_FINAL_STALE_ASSET"] = "1"
+
+        result = self.execute()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Final live release inventory mismatch",
+            result.stderr,
+        )
+        self.assertEqual(self.pruning_operations(), [])
+
+    def test_pruning_failure_reports_completed_live_publication(self):
+        self.setup_pruning_publication()
+        self.env["TEST_PRUNE_FAIL"] = "yazi"
+
+        result = self.execute()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Live publication completed; historical pruning failed",
+            result.stderr,
+        )
+        self.assertEqual(len(self.pruning_operations()), 1)
+
+    def test_unconfirmed_pruning_reports_failure(self):
+        self.setup_pruning_publication()
+        self.env["TEST_PRUNE_RESULT"] = "no_transaction"
+
+        result = self.execute()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "historical pruning unconfirmed",
+            result.stderr,
+        )
+
+    def test_pruning_within_limit_is_success(self):
+        self.setup_pruning_publication()
+        self.env["TEST_PRUNE_RESULT"] = "within_limit"
+
+        result = self.execute()
+
+        self.assertEqual(
+            result.returncode, 0,
+            result.stderr + result.stdout,
+        )
+
+        self.assertEqual(len(self.pruning_operations()), 1)
+
 
     def test_successful_upload_order_and_cleanup(self):
         result = self.execute()

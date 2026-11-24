@@ -578,6 +578,123 @@ class HistoryMetadataTests(unittest.TestCase):
         self.assertEqual(result.exception.code, 2)
         command.assert_not_called()
 
+    def test_apply_pruning_requires_protected(self):
+        self.assert_cli_rejected(["--apply-pruning"])
+
+    def test_apply_and_plan_pruning_are_exclusive(self):
+        self.assert_cli_rejected([
+            "--apply-pruning", "--plan-pruning",
+            "--protected", FILE,
+        ])
+
+    def test_apply_and_publish_are_exclusive(self):
+        self.assert_cli_rejected([
+            "--apply-pruning", "--publish",
+            "--protected", FILE,
+        ])
+
+    def test_apply_pruning_requires_remote_environment(self):
+        argv = [
+            "publish-history.py",
+            "--package", PACKAGE,
+            "--fingerprint", self.fingerprint,
+            "--apply-pruning",
+            "--protected", FILE,
+        ]
+
+        for environment in (
+            {},
+            {"GH_TOKEN": "fixture-token"},
+            {"GH_REPO": "example/disposable"},
+        ):
+            with self.subTest(environment=environment):
+                with (
+                    patch.object(sys, "argv", argv),
+                    patch.dict(os.environ, environment, clear=True),
+                    patch.object(
+                        publisher, "prune_verified_history"
+                    ) as execute,
+                    patch.object(publisher, "run") as command,
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError, "GH_TOKEN and GH_REPO"
+                    ):
+                        publisher.main()
+
+                execute.assert_not_called()
+                command.assert_not_called()
+
+    def test_apply_pruning_cli_invokes_orchestrator(self):
+        argv = [
+            "publish-history.py",
+            "--package", PACKAGE,
+            "--fingerprint", self.fingerprint,
+            "--apply-pruning",
+            "--protected", FILE,
+        ]
+
+        expected = {
+            "state": "complete",
+            "deleted": 2,
+            "recovered": False,
+        }
+
+        output = io.StringIO()
+
+        with (
+            patch.object(sys, "argv", argv),
+            patch.dict(os.environ, {
+                "GH_TOKEN": "fixture-token",
+                "GH_REPO": "example/disposable",
+            }),
+            patch.object(
+                publisher, "prune_verified_history",
+                return_value=expected,
+            ) as execute,
+            patch.object(publisher, "run") as command,
+            contextlib.redirect_stdout(output),
+        ):
+            publisher.main()
+
+        execute.assert_called_once_with(
+            PACKAGE, self.fingerprint, FILE
+        )
+        command.assert_not_called()
+        self.assertEqual(
+            json.loads(output.getvalue()), expected
+        )
+
+    def test_apply_pruning_failure_propagates(self):
+        argv = [
+            "publish-history.py",
+            "--package", PACKAGE,
+            "--fingerprint", self.fingerprint,
+            "--apply-pruning",
+            "--protected", FILE,
+        ]
+
+        output = io.StringIO()
+
+        with (
+            patch.object(sys, "argv", argv),
+            patch.dict(os.environ, {
+                "GH_TOKEN": "fixture-token",
+                "GH_REPO": "example/disposable",
+            }),
+            patch.object(
+                publisher, "prune_verified_history",
+                side_effect=ValueError("pruning failed"),
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "pruning failed"
+            ):
+                publisher.main()
+
+        self.assertEqual(output.getvalue(), "")
+
+
     def test_pruning_cli_returns_verified_plan(self):
         argv = [
             "publish-history.py",
@@ -2080,6 +2197,121 @@ class PruningTransactionTests(unittest.TestCase):
                 )
 
         command.assert_not_called()
+
+
+    def recover_archive(
+        self,
+        pending=True,
+        missing=False,
+        result="complete",
+        journal_remains=False,
+        failure=None,
+    ):
+        release = self.snapshot["release"]
+        journal = self.journal()
+        names = set(journal["keep"])
+
+        initial = names.copy()
+
+        if pending:
+            initial.add(publisher.JOURNAL_NAME)
+
+        final = initial.copy() if journal_remains else names
+
+        authorization = {
+            "journal": journal,
+            "journal_asset": {"id": 999},
+            "state": {"state": "interrupted"},
+        }
+
+        calls = []
+        self.archive_recovery_calls = calls
+
+        def inventory(tag):
+            self.assertEqual(tag, release)
+            calls.append("inventory")
+            return initial if calls.count("inventory") == 1 else final
+
+        def load(tag):
+            self.assertEqual(tag, release)
+            calls.append("load")
+            return None if missing else authorization
+
+        def execute(tag, expected=None):
+            self.assertEqual(tag, release)
+            self.assertEqual(expected, authorization)
+            calls.append("execute")
+
+            if failure is not None:
+                raise failure
+
+            return {"state": result}
+
+        with (
+            patch.object(
+                publisher, "inventory", side_effect=inventory
+            ),
+            patch.object(
+                publisher, "load_pruning_journal",
+                side_effect=load,
+            ),
+            patch.object(
+                publisher, "execute_pruning_transaction",
+                side_effect=execute,
+            ),
+        ):
+            return publisher.recover_before_archive(release)
+
+    def test_archive_without_journal_preserves_normal_path(self):
+        result = self.recover_archive(pending=False)
+
+        self.assertEqual(result, set(self.journal()["keep"]))
+        self.assertEqual(
+            self.archive_recovery_calls,
+            ["inventory"],
+        )
+
+    def test_archive_recovers_pending_transaction(self):
+        result = self.recover_archive()
+
+        self.assertEqual(result, set(self.journal()["keep"]))
+        self.assertEqual(
+            self.archive_recovery_calls,
+            ["inventory", "load", "execute", "inventory"],
+        )
+
+    def test_archive_missing_pending_journal_blocks(self):
+        with self.assertRaisesRegex(ValueError, "disappeared"):
+            self.recover_archive(missing=True)
+
+        self.assertEqual(
+            self.archive_recovery_calls,
+            ["inventory", "load"],
+        )
+
+    def test_archive_incomplete_recovery_blocks(self):
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            self.recover_archive(result="no_transaction")
+
+        self.assertEqual(
+            self.archive_recovery_calls,
+            ["inventory", "load", "execute"],
+        )
+
+    def test_archive_remaining_journal_blocks(self):
+        with self.assertRaisesRegex(ValueError, "journal remains"):
+            self.recover_archive(journal_remains=True)
+
+    def test_archive_recovery_failure_blocks(self):
+        with self.assertRaisesRegex(ValueError, "recovery failed"):
+            self.recover_archive(
+                failure=ValueError("recovery failed")
+            )
+
+        self.assertEqual(
+            self.archive_recovery_calls,
+            ["inventory", "load", "execute"],
+        )
 
 
 if __name__ == "__main__":

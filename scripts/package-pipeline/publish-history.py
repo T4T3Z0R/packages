@@ -936,6 +936,34 @@ def prune_verified_history(package, fingerprint, protected):
     }
 
 
+def recover_before_archive(release):
+    """Resolve pending pruning before adding historical assets."""
+
+    remote = inventory(release)
+
+    if JOURNAL_NAME not in remote:
+        return remote
+
+    existing = load_pruning_journal(release)
+
+    if existing is None:
+        raise ValueError("Pending pruning journal disappeared")
+
+    result = execute_pruning_transaction(
+        release, expected=existing
+    )
+
+    if result["state"] != "complete":
+        raise ValueError("Pending pruning recovery incomplete")
+
+    remote = inventory(release)
+
+    if JOURNAL_NAME in remote:
+        raise ValueError("Pending pruning journal remains")
+
+    return remote
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--package", required=True)
@@ -945,6 +973,7 @@ def main():
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--publish", action="store_true")
     modes.add_argument("--plan-pruning", action="store_true")
+    modes.add_argument("--apply-pruning", action="store_true")
     parser.add_argument("--protected")
     args = parser.parse_args()
 
@@ -959,8 +988,24 @@ def main():
         ), indent=2))
         return
 
+    if args.apply_pruning:
+        if not args.protected:
+            parser.error("--apply-pruning requires --protected")
+
+        if not os.environ.get("GH_TOKEN") or not os.environ.get("GH_REPO"):
+            raise ValueError("GH_TOKEN and GH_REPO are required")
+
+        print(json.dumps(prune_verified_history(
+            args.package,
+            args.fingerprint,
+            args.protected,
+        ), indent=2))
+        return
+
     if args.protected:
-        parser.error("--protected requires --plan-pruning")
+        parser.error(
+            "--protected requires --plan-pruning or --apply-pruning"
+        )
 
     verified = json.loads(run(
         sys.executable, str(PREFLIGHT),
@@ -994,7 +1039,7 @@ def main():
     if not os.environ.get("GH_TOKEN") or not os.environ.get("GH_REPO"):
         raise ValueError("GH_TOKEN and GH_REPO are required")
 
-    remote = inventory(release)
+    remote = recover_before_archive(release)
     validate_history_inventory(remote, args.package, filenames[0])
 
     with tempfile.TemporaryDirectory() as temp:
