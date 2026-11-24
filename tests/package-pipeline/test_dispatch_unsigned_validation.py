@@ -35,7 +35,7 @@ def paths_for(package):
 
 
 class DispatchTests(unittest.TestCase):
-    def test_all_seven_dispatch_exact_revision_and_publish_false(self):
+    def test_all_seven_request_protected_approval(self):
         options = dict(TEMPLATES)
         options.update({name: (f'publish-{name}.yml', {'publish': False})
                         for name in FIXED})
@@ -44,7 +44,7 @@ class DispatchTests(unittest.TestCase):
                 plan = approved_plan(name, inputs, workflow)
                 result = request(plan, MANIFEST, paths_for(name), 'needs_validation')
                 self.assertEqual(result['request']['ref'], 'main')
-                self.assertEqual(result['request']['inputs']['publish'], 'false')
+                self.assertEqual(result['request']['inputs']['publish'], 'true')
                 self.assertEqual(result['request']['inputs']['expected_revision'], REV)
                 self.assertEqual(result['workflow'], workflow)
                 for key, value in inputs.items():
@@ -52,8 +52,8 @@ class DispatchTests(unittest.TestCase):
                         self.assertEqual(result['request']['inputs'][key], value)
                 self.assertFalse(result['dispatch_requested'])
 
-    def test_validated_and_in_flight_never_dispatch(self):
-        for decision in ('validated', 'in_flight'):
+    def test_published_in_flight_and_review_never_dispatch(self):
+        for decision in ('published', 'in_flight', 'manual_review'):
             with self.subTest(decision=decision):
                 plan = approved_plan('ghostty', {'publish': False},
                                      'publish-ghostty.yml')
@@ -98,6 +98,20 @@ class DispatchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             permitted_changes('wezterm', {'arch/packages/manifest.json'})
 
+    def test_existing_unsigned_validation_can_request_approval(self):
+        plan = approved_plan(
+            'wezterm', {'publish': False}, 'publish-wezterm.yml'
+        )
+        result = request(
+            plan, MANIFEST, paths_for('wezterm'), 'validated'
+        )
+        self.assertEqual(
+            result['request']['inputs']['publish'], 'true'
+        )
+        self.assertEqual(
+            result['request']['inputs']['expected_revision'], REV
+        )
+
     def test_invalid_history_decision_rejected(self):
         plan = approved_plan('gameshell', TEMPLATES['gameshell'][1],
                              'publish-gameshell.yml')
@@ -121,13 +135,17 @@ class DispatchTests(unittest.TestCase):
         self.assertIn('case "$REQUESTED_PUBLISH" in', source)
         self.assertIn('false)', source)
         self.assertIn('update=true', source)
-        self.assertIn('if [[ "$package_exists" == true ]]', source)
+        self.assertIn('remote_assets="$(', source)
+        self.assertIn(
+            'if grep -Fxq "$package_file" <<< "$remote_assets"; then',
+            source,
+        )
         self.assertIn('github.event_name == \'workflow_dispatch\'', source)
         self.assertNotIn('github.event_name == \'schedule\'', source)
 
     def test_dispatch_permission_separate_from_read_only_verifier(self):
         workflow = (ROOT / '.github/workflows/package-validation-controller.yml').read_text()
-        reader, writer = workflow.split('\n  dispatch-unsigned-validation:', 1)
+        reader, writer = workflow.split('\n  dispatch-release-approval:', 1)
         self.assertIn('needs.verify-merged-selection.outputs.decision', writer)
         self.assertNotIn('actions: write', reader)
         self.assertNotIn('contents: write', workflow)

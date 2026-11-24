@@ -7,6 +7,8 @@ sys.path.insert(0, str(ROOT / "scripts/package-pipeline"))
 
 from github_validation_history import (
     fetch_pages,
+    run_artifacts,
+    run_attempt_evidence,
     run_evidence,
     validation_runs,
 )
@@ -186,6 +188,90 @@ class HistoryReaderTests(unittest.TestCase):
         self.assertEqual(len(artifacts), 1)
         self.assertEqual(len(calls), 2)
 
+
+
+    def test_attempt_reader_uses_exact_attempt(self):
+        calls = []
+
+        def api(url):
+            calls.append(url)
+            if url.endswith("/attempts/2"):
+                return {"id": 123, "run_attempt": 2}
+            if "/attempts/2/jobs?" in url:
+                return {
+                    "total_count": 1,
+                    "jobs": [
+                        {"id": 21, "run_id": 123, "run_attempt": 2}
+                    ],
+                }
+            raise AssertionError(url)
+
+        result, jobs = run_attempt_evidence(
+            api, "T4T3Z0R/packages", 123, 2
+        )
+
+        self.assertEqual(result["run_attempt"], 2)
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(
+            calls[1].endswith(
+                "/attempts/2/jobs?per_page=100&page=1"
+            )
+        )
+
+    def test_attempt_reader_rejects_wrong_identity(self):
+        def api(url):
+            return {"id": 123, "run_attempt": 1}
+
+        with self.assertRaisesRegex(ValueError, "identity"):
+            run_attempt_evidence(
+                api, "T4T3Z0R/packages", 123, 2
+            )
+
+    def test_attempt_reader_rejects_foreign_job(self):
+        def api(url):
+            if url.endswith("/attempts/2"):
+                return {"id": 123, "run_attempt": 2}
+            return {
+                "total_count": 1,
+                "jobs": [{"id": 21, "run_id": 999}],
+            }
+
+        with self.assertRaisesRegex(ValueError, "another workflow"):
+            run_attempt_evidence(
+                api, "T4T3Z0R/packages", 123, 2
+            )
+
+    def test_attempt_reader_propagates_api_failure(self):
+        def api(url):
+            raise RuntimeError("GitHub unavailable")
+
+        with self.assertRaisesRegex(RuntimeError, "unavailable"):
+            run_attempt_evidence(
+                api, "T4T3Z0R/packages", 123, 2
+            )
+
+    def test_run_artifacts_uses_complete_collection(self):
+        calls = []
+
+        def api(url):
+            calls.append(url)
+            return {
+                "total_count": 1,
+                "artifacts": [{"id": 31}],
+            }
+
+        artifacts = run_artifacts(
+            api, "T4T3Z0R/packages", 123
+        )
+
+        self.assertEqual(artifacts, [{"id": 31}])
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(
+            calls[0].endswith(
+                "/runs/123/artifacts?per_page=100&page=1"
+            )
+        )
 
 if __name__ == "__main__":
     unittest.main()

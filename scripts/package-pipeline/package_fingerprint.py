@@ -58,13 +58,23 @@ def fingerprint(root, revision, package):
         f"{revision}:.github/workflows/{workflow_file(package)}"
     )
 
+    # Shared release-control code is part of validation identity.
+    # Resolve it from the historical commit, never the working tree.
+    shared_pipeline_tree = git(
+        root, "rev-parse", "--verify",
+        f"{revision}:scripts/package-pipeline"
+    )
+    if git(root, "cat-file", "-t", shared_pipeline_tree) != "tree":
+        raise ValueError("Shared pipeline path is not a Git tree")
+
     # Canonical serialization makes object order irrelevant.
     inputs = {
-        "schema": 1,
+        "schema": 2,
         "package": package,
         "manifest": config,
         "recipe_tree": recipe_tree,
         "workflow_blob": workflow_blob,
+        "shared_pipeline_tree": shared_pipeline_tree,
     }
 
     encoded = json.dumps(

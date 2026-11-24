@@ -9,7 +9,8 @@ from pathlib import Path
 
 from github_validation_history import (
     github_api,
-    run_evidence,
+    run_artifacts,
+    run_attempt_evidence,
     validation_runs,
 )
 from package_fingerprint import fingerprint
@@ -81,6 +82,8 @@ def evaluate(api, repo, package, target, historical):
     seen = set()
     active = []
     validated = []
+    published = []
+    manual_review = []
 
     for run in runs:
         if not isinstance(run, dict):
@@ -116,31 +119,74 @@ def evaluate(api, repo, package, target, historical):
             active.append(run_id)
             continue
 
-        if run.get("conclusion") != "success":
-            continue
+        attempt = run.get("run_attempt")
+        if type(attempt) is not int or attempt < 1:
+            raise ValueError("Invalid workflow run attempt")
 
-        jobs, artifacts = run_evidence(api, repo, run_id)
+        artifacts = run_artifacts(api, repo, run_id)
+        outcomes = set()
 
-        result = classify(
-            run,
-            jobs,
-            artifacts,
-            package=package,
-            target=target,
-            fingerprint=lambda revision, name: historical(
-                revision, name
-            ),
-        )
-
-        if result == "validated":
-            validated.append(run_id)
-        elif result not in ("retry", "unrelated"):
-            raise ValueError(
-                "Unexpected completed-run classification"
+        for number in range(1, attempt + 1):
+            attempt_run, jobs = run_attempt_evidence(
+                api, repo, run_id, number
             )
+
+            if (
+                attempt_run.get("head_sha") != sha
+                or attempt_run.get("event") != run.get("event")
+            ):
+                raise ValueError(
+                    "Workflow attempt source or event mismatch"
+                )
+
+            if number == attempt:
+                if (
+                    attempt_run.get("status") != status
+                    or attempt_run.get("conclusion")
+                    != run.get("conclusion")
+                ):
+                    raise ValueError(
+                        "Workflow attempt metadata changed during evaluation"
+                    )
+            elif attempt_run.get("status") != "completed":
+                raise ValueError(
+                    "Earlier workflow attempt was not completed"
+                )
+
+            outcome = classify(
+                attempt_run,
+                jobs,
+                artifacts,
+                package=package,
+                target=target,
+                fingerprint=lambda revision, name: historical(
+                    revision, name
+                ),
+            )
+            outcomes.add(outcome)
+
+        unexpected = outcomes - {
+            "retry", "validated", "published", "manual_review"
+        }
+        if unexpected:
+            raise ValueError(
+                "Unexpected workflow attempt classification"
+            )
+
+        # Record each run once per category, not once per attempt.
+        if "validated" in outcomes:
+            validated.append(run_id)
+        if "published" in outcomes:
+            published.append(run_id)
+        if "manual_review" in outcomes:
+            manual_review.append(run_id)
 
     if active:
         decision = "in_flight"
+    elif manual_review:
+        decision = "manual_review"
+    elif published:
+        decision = "published"
     elif validated:
         decision = "validated"
     else:
@@ -150,6 +196,8 @@ def evaluate(api, repo, package, target, historical):
         "package": package,
         "decision": decision,
         "validated_runs": validated,
+        "published_runs": published,
+        "manual_review_runs": manual_review,
         "active_runs": active,
         "history_count": len(runs),
     }

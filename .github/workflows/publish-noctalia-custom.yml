@@ -120,7 +120,6 @@ jobs:
           echo "Package version: ${pkgver}"
 
       - name: Verify selected manifest source
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish != true }}
         run: |
           set -euo pipefail
           python3 scripts/package-pipeline/verify_validation_source.py \
@@ -387,11 +386,13 @@ jobs:
           "
 
       - name: Candidate summary
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
         run: |
           {
             echo '## noctalia-custom unsigned candidate'
             echo
-            echo "- Requested source: \`${{ inputs.source_ref }}\`"
+            echo "- Requested source: \`${SOURCE_REF}\`"
             echo "- Upstream base tag: \`${BASE_TAG}\`"
             echo "- Exact source commit: \`${SOURCE_SHA}\`"
             echo "- Source SHA-256: \`${SOURCE_SHA256}\`"
@@ -609,11 +610,13 @@ jobs:
         run: bash scripts/package-pipeline/publish-repository.sh
 
       - name: Publication summary
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
         run: |
           {
             echo '## Published noctalia-custom'
             echo
-            echo "- Requested source: \`${{ inputs.source_ref }}\`"
+            echo "- Requested source: \`${SOURCE_REF}\`"
             echo "- Package: \`${PACKAGE_FILE}\`"
             echo "- Package SHA-256: \`${PACKAGE_SHA256}\`"
             echo "- Repository: \`${REPO_NAME}\`"

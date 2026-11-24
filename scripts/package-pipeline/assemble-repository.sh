@@ -184,6 +184,68 @@ for existing_pkg in "${existing_packages[@]}"; do
   package_owners["$existing_name"]="$existing_pkg"
 done
 
+# Enforce complete package-family updates.
+# Required companions must always be present in the candidate.
+# Optional companions must be replaced if already published.
+# Reject incomplete updates before displacement or archive staging.
+required_companions=()
+optional_companions=()
+
+case "$PACKAGE_NAME" in
+  ghostty)
+    required_companions=(
+      ghostty-shell-integration
+      ghostty-terminfo
+      ghostty-nautilus
+    )
+    optional_companions=(ghostty-debug)
+    ;;
+  keepassxc)
+    optional_companions=(keepassxc-debug)
+    ;;
+  syncthing)
+    required_companions=(
+      syncthing-discosrv
+      syncthing-relaysrv
+    )
+    optional_companions=(
+      syncthing-debug
+      syncthing-discosrv-debug
+      syncthing-relaysrv-debug
+    )
+    ;;
+  wezterm)
+    required_companions=(wezterm-debug)
+    ;;
+esac
+
+for companion in "${required_companions[@]}"; do
+  if [[ -z "${selected_names[$companion]+present}" ]]; then
+    echo "Incomplete package family $PACKAGE_NAME: missing required companion $companion" >&2
+    exit 1
+  fi
+done
+
+for companion in "${optional_companions[@]}"; do
+  if [[ -n "${package_owners[$companion]+present}" &&
+        -z "${selected_names[$companion]+present}" ]]; then
+    echo "Incomplete package family $PACKAGE_NAME: missing existing optional companion $companion" >&2
+    exit 1
+  fi
+done
+
+# A serialized publisher must not reintroduce an already-published
+# package filename. Reject both complete and partial existing pairs.
+# This check runs after verification of existing repository signatures
+# and before any package displacement or archive staging.
+for new_file in "${candidate_files[@]}"; do
+  if [[ -e "repo-output/$new_file" ||
+        -e "repo-output/${new_file}.sig" ]]; then
+    echo "Candidate package version already present: $new_file" >&2
+    exit 1
+  fi
+done
+
 # Track the displaced package independently of archive staging.
 displaced_name=""
 declare -A displaced_by_name=()

@@ -6,11 +6,13 @@ on:
       - feature/shared-package-pipeline
       - feature/shared-noctalia-custom
       - feature/shared-gameshell
+      - feature/unified-release-lifecycle
     paths:
       - "scripts/package-pipeline/**"
       - "tests/package-pipeline/**"
       - "arch/packages/**"
       - ".github/workflows/test-package-pipeline.yml"
+      - ".github/workflows/maintain-package-history.yml"
       - ".github/workflows/package-validation-controller.yml"
       - ".github/workflows/review-package-candidate-approval.yml"
       - ".github/workflows/check-package-upstream.yml"
@@ -20,13 +22,22 @@ on:
       - ".github/workflows/publish-gameshell.yml"
       - ".github/workflows/publish-wezterm.yml"
       - ".github/workflows/publish-ghostty.yml"
+      - ".github/workflows/publish-keepassxc.yml"
+      - ".github/workflows/publish-syncthing.yml"
       - "arch/ghostty/**"
+      - "arch/gameshell/**"
+      - "arch/keepassxc/**"
+      - "arch/noctalia-custom/**"
+      - "arch/noctalia-greeter-t4t3z0r/**"
+      - "arch/syncthing/**"
+      - "arch/wezterm/**"
   pull_request:
     paths:
       - "scripts/package-pipeline/**"
       - "tests/package-pipeline/**"
       - "arch/packages/**"
       - ".github/workflows/test-package-pipeline.yml"
+      - ".github/workflows/maintain-package-history.yml"
       - ".github/workflows/package-validation-controller.yml"
       - ".github/workflows/review-package-candidate-approval.yml"
       - ".github/workflows/check-package-upstream.yml"
@@ -36,7 +47,15 @@ on:
       - ".github/workflows/publish-gameshell.yml"
       - ".github/workflows/publish-wezterm.yml"
       - ".github/workflows/publish-ghostty.yml"
+      - ".github/workflows/publish-keepassxc.yml"
+      - ".github/workflows/publish-syncthing.yml"
       - "arch/ghostty/**"
+      - "arch/gameshell/**"
+      - "arch/keepassxc/**"
+      - "arch/noctalia-custom/**"
+      - "arch/noctalia-greeter-t4t3z0r/**"
+      - "arch/syncthing/**"
+      - "arch/wezterm/**"
 
 permissions:
   contents: read
@@ -91,6 +110,7 @@ jobs:
           python -m unittest discover -s tests/package-pipeline -p 'test_upstream_checker.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_upstream_report.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_package_selection.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_package_release_contract.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_seven_package_validation.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_package_fingerprint.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_validation_ledger.py' -v
@@ -102,6 +122,8 @@ jobs:
           python -m unittest discover -s tests/package-pipeline -p 'test_candidate_selection_pr_writer.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_merged_selection_validation.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_dispatch_unsigned_validation.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_release_approval_policy.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_release_approval_dispatch.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_candidate_issue_state.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_github_candidate_issues.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_create_candidate_issue.py' -v
@@ -134,4 +156,5 @@ jobs:
         run: |
           python -m unittest discover -s tests/package-pipeline -p "test_retention.py" -v
           python -m unittest discover -s tests/package-pipeline -p "test_history_publication.py" -v
+          python -m unittest discover -s tests/package-pipeline -p "test_history_maintenance.py" -v
           python -m unittest discover -s tests/package-pipeline -p "test_publication_archive_gate.py" -v

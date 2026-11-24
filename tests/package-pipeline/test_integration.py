@@ -201,6 +201,229 @@ class RepositoryIntegrationTests(unittest.TestCase):
             (self.root / "gh-mutation").exists()
         )
 
+    def prepare_family_update(
+        self, name, required=(), existing_optional=(),
+        omitted=(),
+    ):
+        output = self.root / "package-output"
+        extras = []
+
+        for member in (name, *required, *existing_optional):
+            self.make_package(member, "1.0", self.fixture)
+
+            if member in omitted:
+                continue
+
+            candidate = self.make_package(
+                member, "2.0", output
+            )
+
+            if member == name:
+                self.env["PACKAGE_NAME"] = name
+                self.env["PACKAGE_FILE"] = candidate.name
+            else:
+                extras.append(candidate.name)
+
+        self.env["ADDITIONAL_PACKAGE_FILES"] = " ".join(extras)
+
+    def assert_family_update_rejected(self, missing):
+        result = self.assemble()
+
+        self.assertNotEqual(
+            result.returncode, 0,
+            "Incomplete family update was accepted: "
+            + missing,
+        )
+        self.assertIn(missing, result.stderr)
+
+        staged = self.root / "repo-output"
+
+        expected = {
+            asset.name: asset.read_bytes()
+            for asset in self.fixture.glob("*.pkg.tar.zst*")
+        }
+        actual = {
+            asset.name: asset.read_bytes()
+            for asset in staged.glob("*.pkg.tar.zst*")
+        }
+
+        self.assertEqual(actual, expected)
+
+        self.assertFalse(
+            (staged / "test-repo.db").exists()
+        )
+        self.assertFalse(
+            (self.root / "archive-output").exists()
+        )
+        self.assertFalse(
+            (self.root / "archive-state.txt").exists()
+        )
+        self.assertFalse(
+            (self.root / "gh-mutation").exists()
+        )
+
+    def test_missing_existing_debug_companion_ghostty(self):
+        self.prepare_family_update(
+            "ghostty",
+            required=(
+                "ghostty-shell-integration",
+                "ghostty-terminfo",
+                "ghostty-nautilus",
+            ),
+            existing_optional=("ghostty-debug",),
+            omitted=("ghostty-debug",),
+        )
+        self.assert_family_update_rejected("ghostty-debug")
+
+    def test_missing_existing_debug_companion_keepassxc(self):
+        self.prepare_family_update(
+            "keepassxc",
+            existing_optional=("keepassxc-debug",),
+            omitted=("keepassxc-debug",),
+        )
+        self.assert_family_update_rejected("keepassxc-debug")
+
+    def test_missing_existing_debug_companion_syncthing(self):
+        self.prepare_family_update(
+            "syncthing",
+            required=(
+                "syncthing-discosrv",
+                "syncthing-relaysrv",
+            ),
+            existing_optional=("syncthing-debug",),
+            omitted=("syncthing-debug",),
+        )
+        self.assert_family_update_rejected("syncthing-debug")
+
+    def test_missing_existing_debug_companion_discosrv(self):
+        self.prepare_family_update(
+            "syncthing",
+            required=(
+                "syncthing-discosrv",
+                "syncthing-relaysrv",
+            ),
+            existing_optional=("syncthing-discosrv-debug",),
+            omitted=("syncthing-discosrv-debug",),
+        )
+        self.assert_family_update_rejected(
+            "syncthing-discosrv-debug"
+        )
+
+    def test_missing_existing_debug_companion_relaysrv(self):
+        self.prepare_family_update(
+            "syncthing",
+            required=(
+                "syncthing-discosrv",
+                "syncthing-relaysrv",
+            ),
+            existing_optional=("syncthing-relaysrv-debug",),
+            omitted=("syncthing-relaysrv-debug",),
+        )
+        self.assert_family_update_rejected(
+            "syncthing-relaysrv-debug"
+        )
+
+    def test_missing_required_ghostty_companion(self):
+        self.prepare_family_update(
+            "ghostty",
+            required=(
+                "ghostty-shell-integration",
+                "ghostty-terminfo",
+                "ghostty-nautilus",
+            ),
+            omitted=("ghostty-terminfo",),
+        )
+        self.assert_family_update_rejected(
+            "ghostty-terminfo"
+        )
+
+    def test_missing_required_syncthing_companion(self):
+        self.prepare_family_update(
+            "syncthing",
+            required=(
+                "syncthing-discosrv",
+                "syncthing-relaysrv",
+            ),
+            omitted=("syncthing-relaysrv",),
+        )
+        self.assert_family_update_rejected(
+            "syncthing-relaysrv"
+        )
+
+    def test_missing_required_wezterm_companion(self):
+        self.prepare_family_update(
+            "wezterm",
+            required=("wezterm-debug",),
+            omitted=("wezterm-debug",),
+        )
+        self.assert_family_update_rejected("wezterm-debug")
+
+    def test_optional_debug_absent_from_both_states(self):
+        self.prepare_family_update(
+            "keepassxc",
+        )
+
+        result = self.assemble()
+        self.assertEqual(
+            result.returncode, 0,
+            result.stdout + result.stderr,
+        )
+        self.assertFalse(
+            (self.root / "gh-mutation").exists()
+        )
+
+    def test_complete_family_update(self):
+        self.prepare_family_update(
+            "keepassxc",
+            existing_optional=("keepassxc-debug",),
+        )
+
+        result = self.assemble()
+        self.assertEqual(
+            result.returncode, 0,
+            result.stdout + result.stderr,
+        )
+
+        staged = self.root / "repo-output"
+        for name in ("keepassxc", "keepassxc-debug"):
+            new = f"{name}-2.0-1-any.pkg.tar.zst"
+            old = f"{name}-1.0-1-any.pkg.tar.zst"
+
+            self.assertTrue((staged / new).is_file())
+            self.assertFalse((staged / old).exists())
+            self.assertTrue(
+                (self.root / "archive-output" / old).is_file()
+            )
+
+        self.assertFalse(
+            (self.root / "gh-mutation").exists()
+        )
+
+    def test_unrelated_family_preserved(self):
+        package = self.make_package(
+            "keepassxc-debug", "1.0", self.fixture
+        )
+
+        result = self.assemble()
+        self.assertEqual(
+            result.returncode, 0,
+            result.stdout + result.stderr,
+        )
+
+        staged = self.root / "repo-output" / package.name
+
+        self.assertEqual(
+            staged.read_bytes(), package.read_bytes()
+        )
+        self.assertEqual(
+            Path(str(staged) + ".sig").read_bytes(),
+            Path(str(package) + ".sig").read_bytes(),
+        )
+
+        self.assertFalse(
+            (self.root / "gh-mutation").exists()
+        )
+
     def test_batch_replaces_two_packages(self):
         extra = "yazi-extra-2.0-1-any.pkg.tar.zst"
         self.make_package(
@@ -352,6 +575,77 @@ class RepositoryIntegrationTests(unittest.TestCase):
         self.assertFalse((self.root / "gh-mutation").exists())
         self.assertFalse(
             (self.root / "repo-output/test-repo.db").exists()
+        )
+
+
+    def test_existing_candidate_version_blocks_assembly(self):
+        old = self.fixture / "yazi-1.0-1-any.pkg.tar.zst"
+        old.unlink()
+        Path(str(old) + ".sig").unlink()
+
+        candidate = self.root / "package-output" / self.env["PACKAGE_FILE"]
+        for asset in (candidate, Path(str(candidate) + ".sig")):
+            (self.fixture / asset.name).write_bytes(asset.read_bytes())
+
+        result = self.assemble()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Candidate package version already present",
+            result.stderr,
+        )
+        self.assertFalse(
+            (self.root / "archive-state.txt").exists()
+        )
+        self.assertFalse(
+            (self.root / "gh-mutation").exists()
+        )
+
+    def test_existing_split_package_version_blocks_assembly(self):
+        old = self.fixture / "yazi-extra-1.0-1-any.pkg.tar.zst"
+        old.unlink()
+        Path(str(old) + ".sig").unlink()
+
+        extra = self.make_package(
+            "yazi-extra", "2.0",
+            self.root / "package-output",
+        )
+        for asset in (extra, Path(str(extra) + ".sig")):
+            (self.fixture / asset.name).write_bytes(asset.read_bytes())
+        self.env["ADDITIONAL_PACKAGE_FILES"] = extra.name
+
+        result = self.assemble()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Candidate package version already present",
+            result.stderr,
+        )
+        self.assertFalse(
+            (self.root / "archive-state.txt").exists()
+        )
+        self.assertFalse(
+            (self.root / "gh-mutation").exists()
+        )
+
+    def test_orphaned_existing_candidate_signature_blocks(self):
+        old = self.fixture / "yazi-1.0-1-any.pkg.tar.zst"
+        old.unlink()
+        Path(str(old) + ".sig").unlink()
+
+        candidate = self.root / "package-output" / self.env["PACKAGE_FILE"]
+        signature = Path(str(candidate) + ".sig")
+        (self.fixture / signature.name).write_bytes(signature.read_bytes())
+
+        result = self.assemble()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Candidate package version already present",
+            result.stderr,
+        )
+        self.assertFalse(
+            (self.root / "gh-mutation").exists()
         )
 
     def test_successful_replacement(self):

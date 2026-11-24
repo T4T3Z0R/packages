@@ -183,7 +183,6 @@ jobs:
             > evidence/upstream-tag-verification.json
 
       - name: Verify selected manifest source
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish != true }}
         env:
           SOURCE_TAG: ${{ inputs.source_tag }}
         run: |

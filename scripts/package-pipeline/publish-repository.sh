@@ -71,6 +71,37 @@ fi
 
 mapfile -t assembly_state < archive-state.txt
 
+prune_packages=()
+prune_protected=()
+
+record_pruning_target() {
+  local name="$1"
+  local previous="$2"
+  local result="$3"
+  local verified
+
+  verified="$(
+    printf '%s\n' "$result" |
+      python3 -c 'import json,sys; print("yes" if json.load(sys.stdin).get("history_verified") is True else "no")'
+  )" || return 1
+
+  if [[ "$verified" == "yes" ]]; then
+    if [[ -z "$previous" ]]; then
+      echo "Verified history without displacement: $name" >&2
+      return 1
+    fi
+
+    if [[ ! "$name" =~ ^[a-z][a-z0-9-]*$ ||
+          ! "$previous" =~ ^[A-Za-z0-9._+-]+[.]pkg[.]tar[.]zst$ ]]; then
+      echo "Invalid historical pruning target: $name" >&2
+      return 1
+    fi
+
+    prune_packages+=("$name")
+    prune_protected+=("$previous")
+  fi
+}
+
 if (( ${#candidate_files[@]} == 1 )); then
   if (( ${#assembly_state[@]} != 3 )); then
     echo "Invalid assembly state" >&2
@@ -129,6 +160,8 @@ if (( ${#candidate_files[@]} == 1 )); then
     echo "Archive gate did not confirm authorization" >&2
     exit 1
   fi
+
+  record_pruning_target "$PACKAGE_NAME" "$displaced" "$archive_result"
 
 else
   expected_count=$((1 + 3 * ${#candidate_files[@]}))
@@ -254,7 +287,16 @@ else
       echo "Archive gate denied publication: $name" >&2
       exit 1
     fi
+
+    record_pruning_target "$name" "$previous" "$archive_result"
   done
+fi
+
+if (( ${#prune_packages[@]} > 0 )); then
+  if [[ ! "${SIGNING_SUBKEY:-}" =~ ^[A-Fa-f0-9]{40}$ ]]; then
+    echo "Full signing fingerprint required for pruning" >&2
+    exit 1
+  fi
 fi
 
 gh release view "$RELEASE_TAG" >/dev/null
@@ -364,3 +406,48 @@ for asset in "${existing[@]}"; do
       --yes
   fi
 done
+
+# Historical pruning must follow successful live publication and cleanup.
+if (( ${#prune_packages[@]} > 0 )); then
+  final_output="$(
+    gh release view "$RELEASE_TAG" \
+      --json assets \
+      --jq '.assets[].name'
+  )"
+
+  if ! diff -u \
+    <(printf '%s\n' "${desired[@]}" | LC_ALL=C sort) \
+    <(printf '%s\n' "$final_output" | LC_ALL=C sort)
+  then
+    echo "Final live release inventory mismatch; pruning blocked" >&2
+    exit 1
+  fi
+
+  echo "Live repository publication and cleanup completed."
+
+  for i in "${!prune_packages[@]}"; do
+    name="${prune_packages[i]}"
+    protected="${prune_protected[i]}"
+
+    if ! pruning_result="$(
+      python3 "$script_dir/publish-history.py" \
+        --package "$name" \
+        --fingerprint "$SIGNING_SUBKEY" \
+        --apply-pruning \
+        --protected "$protected"
+    )"; then
+      echo "Live publication completed; historical pruning failed: $name" >&2
+      exit 1
+    fi
+
+    if ! printf '%s\n' "$pruning_result" |
+      python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("state") in ("complete", "within_limit") else 1)'
+    then
+      echo "Live publication completed; historical pruning unconfirmed: $name" >&2
+      exit 1
+    fi
+
+    printf 'Historical pruning completed: %s\n' "$name"
+    printf '%s\n' "$pruning_result"
+  done
+fi

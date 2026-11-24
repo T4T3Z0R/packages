@@ -115,6 +115,7 @@ class LedgerTests(unittest.TestCase):
     def test_failed_build_can_retry(self):
         run, jobs, artifacts = evidence()
         run["conclusion"] = "failure"
+        jobs[0]["conclusion"] = "failure"
         self.assertEqual(
             self.classify(run, jobs, artifacts), "retry"
         )
@@ -122,6 +123,7 @@ class LedgerTests(unittest.TestCase):
     def test_cancelled_build_can_retry(self):
         run, jobs, artifacts = evidence()
         run["conclusion"] = "cancelled"
+        jobs[0]["conclusion"] = "cancelled"
         self.assertEqual(
             self.classify(run, jobs, artifacts), "retry"
         )
@@ -139,18 +141,80 @@ class LedgerTests(unittest.TestCase):
             self.classify(run, jobs, []), "retry"
         )
 
-    def test_failed_upload_can_retry(self):
+    def test_inconsistent_upload_requires_review(self):
         run, jobs, artifacts = evidence()
         jobs[0]["steps"][0]["conclusion"] = "failure"
         self.assertEqual(
-            self.classify(run, jobs, artifacts), "retry"
+            self.classify(run, jobs, artifacts), "manual_review"
         )
 
-    def test_publication_is_not_unsigned_validation(self):
+    def test_inconsistent_publication_requires_review(self):
         run, jobs, artifacts = evidence()
         jobs[1]["conclusion"] = "success"
         self.assertEqual(
-            self.classify(run, jobs, artifacts), "retry"
+            self.classify(run, jobs, artifacts), "manual_review"
+        )
+
+    def test_successful_protected_publication(self):
+        run, jobs, artifacts = evidence()
+        jobs[1]["conclusion"] = "success"
+        jobs[2]["conclusion"] = "success"
+        self.assertEqual(
+            self.classify(run, jobs, artifacts), "published"
+        )
+
+    def test_published_artifact_may_expire(self):
+        run, jobs, artifacts = evidence()
+        jobs[1]["conclusion"] = "success"
+        jobs[2]["conclusion"] = "success"
+        artifacts[0]["expired"] = True
+        self.assertEqual(
+            self.classify(run, jobs, artifacts), "published"
+        )
+
+    def test_waiting_for_environment_approval(self):
+        run, jobs, artifacts = evidence()
+        run["status"] = "waiting"
+        run["conclusion"] = None
+        self.assertEqual(
+            self.classify(run, jobs, artifacts), "in_flight"
+        )
+
+    def test_rejected_or_cancelled_approval_requires_review(self):
+        for conclusion in ("cancelled", "action_required", "failure"):
+            with self.subTest(conclusion=conclusion):
+                run, jobs, artifacts = evidence()
+                run["conclusion"] = conclusion
+                jobs[1]["conclusion"] = "cancelled"
+                jobs[2]["conclusion"] = "success"
+                self.assertEqual(
+                    self.classify(run, jobs, artifacts),
+                    "manual_review",
+                )
+
+    def test_failed_notification_requires_review(self):
+        run, jobs, artifacts = evidence()
+        run["conclusion"] = "failure"
+        jobs[2]["conclusion"] = "failure"
+        self.assertEqual(
+            self.classify(run, jobs, artifacts), "manual_review"
+        )
+
+    def test_failed_publication_requires_review(self):
+        run, jobs, artifacts = evidence()
+        run["conclusion"] = "failure"
+        jobs[1]["conclusion"] = "failure"
+        jobs[2]["conclusion"] = "success"
+        self.assertEqual(
+            self.classify(run, jobs, artifacts), "manual_review"
+        )
+
+    def test_successful_publication_without_temporary_artifact(self):
+        run, jobs, artifacts = evidence()
+        jobs[1]["conclusion"] = "success"
+        jobs[2]["conclusion"] = "success"
+        self.assertEqual(
+            self.classify(run, jobs, []), "published"
         )
 
     def test_wrong_attempt_artifact(self):
@@ -170,7 +234,7 @@ class LedgerTests(unittest.TestCase):
     def test_missing_validation_job(self):
         run, jobs, artifacts = evidence()
         self.assertEqual(
-            self.classify(run, jobs[1:], artifacts), "retry"
+            self.classify(run, jobs[1:], artifacts), "manual_review"
         )
 
     def test_unknown_package_fails(self):

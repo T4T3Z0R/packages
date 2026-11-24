@@ -3,20 +3,10 @@
 
 import re
 
-from select_package_validation import SUPPORTED
+from package_release_contract import SUPPORTED, VALIDATION_JOBS
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
-
-VALIDATION_JOBS = {
-    "gameshell": "Validate unsigned candidate",
-    "noctalia-custom": "Validate unsigned candidate",
-    "noctalia-greeter-t4t3z0r": "Validate unsigned candidate",
-    "ghostty": "Build and validate unsigned Ghostty split packages",
-    "keepassxc": "Build and validate unsigned KeePassXC",
-    "syncthing": "Build and validate unsigned Syncthing",
-    "wezterm": "Build and validate unsigned WezTerm pair",
-}
 
 PROTECTED_JOB_PREFIXES = (
     "Sign and publish",
@@ -57,6 +47,14 @@ def classify(run, jobs, artifacts, *, package, target, fingerprint):
         raise ValueError("Unrecognized workflow status")
 
     if run.get("conclusion") != "success":
+        matches = [
+            job for job in jobs
+            if job.get("name") == VALIDATION_JOBS[package]
+        ]
+        if len(matches) != 1:
+            return "manual_review"
+        if matches[0].get("conclusion") == "success":
+            return "manual_review"
         return "retry"
 
     matches = [
@@ -64,11 +62,11 @@ def classify(run, jobs, artifacts, *, package, target, fingerprint):
         if job.get("name") == VALIDATION_JOBS[package]
     ]
     if len(matches) != 1:
-        return "retry"
+        return "manual_review"
 
     validation = matches[0]
     if validation.get("conclusion") != "success":
-        return "retry"
+        return "manual_review"
 
     steps = validation.get("steps", [])
     if package in ("gameshell", "noctalia-custom",
@@ -83,7 +81,7 @@ def classify(run, jobs, artifacts, *, package, target, fingerprint):
     ]
 
     if len(uploads) != 1 or uploads[0].get("conclusion") != "success":
-        return "retry"
+        return "manual_review"
 
     protected = [
         job for job in jobs
@@ -93,10 +91,28 @@ def classify(run, jobs, artifacts, *, package, target, fingerprint):
         )
     ]
     if len(protected) != 2:
-        return "retry"
+        return "manual_review"
 
-    if any(job.get("conclusion") != "skipped" for job in protected):
-        return "retry"
+    notifications = [
+        job for job in protected
+        if job.get("name") == "Notify signing approval ready"
+    ]
+    publications = [
+        job for job in protected
+        if job.get("name", "").startswith("Sign and publish")
+    ]
+    if len(notifications) != 1 or len(publications) != 1:
+        return "manual_review"
+
+    states = (
+        notifications[0].get("conclusion"),
+        publications[0].get("conclusion"),
+    )
+    if states not in (
+        ("skipped", "skipped"),
+        ("success", "success"),
+    ):
+        return "manual_review"
 
     run_id = run.get("id")
     attempt = run.get("run_attempt")
@@ -104,6 +120,11 @@ def classify(run, jobs, artifacts, *, package, target, fingerprint):
         return "retry"
     if type(attempt) is not int or attempt <= 0:
         return "retry"
+
+    # A successful protected publishing job proves completion.
+    # Its temporary unsigned artifact may expire afterward.
+    if states == ("success", "success"):
+        return "published"
 
     expected = f"{package}-{run_id}-{attempt}-candidate"
 
