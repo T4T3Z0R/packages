@@ -68,9 +68,6 @@ jobs:
           grep -Fxq \
             'pkgname=(ghostty ghostty-shell-integration ghostty-terminfo ghostty-nautilus)' \
             arch/ghostty/PKGBUILD
-          grep -Fxq \
-            "sha256sums=('2e2a2516f9bea89a4991ad7c9401b77682eed366387a5b1d7c629472b5d11a43')" \
-            arch/ghostty/PKGBUILD
           case "$(zig version)" in
             0.17.*) ;;
             *) echo "Ghostty ${PKGVER} currently requires Zig 0.17.x" >&2; exit 1 ;;

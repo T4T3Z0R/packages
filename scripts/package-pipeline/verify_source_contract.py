@@ -61,6 +61,20 @@ def verify(name, config, root=ROOT):
             f"manifest={expected}, recipe={actual}"
         )
 
+    if name == "ghostty":
+        pinned = re.findall(
+            r"^sha256sums=\('[0-9a-f]{64}'\)$",
+            source, re.MULTILINE
+        )
+        declarations = re.findall(
+            r"^[ \t]*sha256sums[ \t]*=",
+            source, re.MULTILINE
+        )
+        if len(pinned) != 1 or len(declarations) != 1:
+            raise ValueError(
+                "ghostty: expected one literal pinned SHA-256 checksum"
+            )
+
     pkgver = assignment(source, "pkgver")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+_]*", pkgver):
         raise ValueError(f"{name}: invalid pkgver")

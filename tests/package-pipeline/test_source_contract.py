@@ -1,6 +1,7 @@
 import copy
 import importlib.util
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,6 +36,107 @@ class SourceContractTests(unittest.TestCase):
         original = (ROOT / config["recipe"]).read_text()
         recipe.write_text(original)
         return root, config, recipe
+
+
+    def test_ghostty_updated_version_and_checksum_allowed(self):
+        root, config, recipe = self.fixture()
+        source = recipe.read_text()
+
+        old_version = contract.assignment(source, "pkgver")
+        old_line = f"pkgver={old_version}\n"
+
+        checksum = re.search(
+            r"^sha256sums=\('[0-9a-f]{64}'\)$",
+            source, re.MULTILINE
+        )
+        self.assertIsNotNone(checksum)
+        self.assertEqual(source.count(old_line), 1)
+
+        replacement = "sha256sums=('" + ("a" * 64) + "')"
+
+        source = source.replace(
+            old_line, "pkgver=1.4.1\n", 1
+        ).replace(
+            checksum.group(0), replacement, 1
+        )
+
+        config["source_ref"] = "v1.4.1"
+        recipe.write_text(source)
+
+        result = contract.verify("ghostty", config, root)
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["pkgver"], "1.4.1")
+
+    def test_ghostty_unpinned_or_dynamic_checksum_rejected(self):
+        root, config, recipe = self.fixture()
+        source = recipe.read_text()
+
+        checksum = re.search(
+            r"^sha256sums=\('[0-9a-f]{64}'\)$",
+            source, re.MULTILINE
+        )
+        self.assertIsNotNone(checksum)
+
+        invalid = (
+            "sha256sums=('SKIP')",
+            "sha256sums=('not-a-digest')",
+            "sha256sums=($(echo unsafe))",
+            "",
+        )
+
+        for replacement in invalid:
+            with self.subTest(replacement=replacement):
+                recipe.write_text(
+                    source.replace(
+                        checksum.group(0), replacement, 1
+                    )
+                )
+
+                with self.assertRaisesRegex(
+                    ValueError, "literal pinned SHA-256"
+                ):
+                    contract.verify("ghostty", config, root)
+
+    def test_ghostty_duplicate_checksum_assignment_rejected(self):
+        root, config, recipe = self.fixture()
+
+        source = recipe.read_text()
+        source += "\nsha256sums=('" + ("b" * 64) + "')\n"
+        recipe.write_text(source)
+
+        with self.assertRaisesRegex(
+            ValueError, "literal pinned SHA-256"
+        ):
+            contract.verify("ghostty", config, root)
+
+    def test_ghostty_workflow_uses_contract_not_fixed_digest(self):
+        source = (
+            ROOT / ".github/workflows/publish-ghostty.yml"
+        ).read_text()
+
+        load = source.index(
+            "      - name: Load verified Ghostty source selection"
+        )
+        build = source.index(
+            "      - name: Build split packages as unprivileged user"
+        )
+        self.assertLess(load, build)
+
+        self.assertIn(
+            "verify_source_contract.py --package ghostty",
+            source[load:build],
+        )
+
+        verify_block = source.split(
+            "      - name: Verify pinned recipe and compiler", 1
+        )[1].split("\n      - name:", 1)[0]
+
+        self.assertNotIn("sha256sums", verify_block)
+        self.assertIn(
+            "bash -n arch/ghostty/PKGBUILD",
+            verify_block,
+        )
 
     def test_wrong_stable_version_rejected(self):
         root, config, recipe = self.fixture()
