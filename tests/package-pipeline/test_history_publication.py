@@ -937,5 +937,1150 @@ class HistorySnapshotTests(unittest.TestCase):
                 publisher.verify_snapshot_asset(path, record)
 
 
+class PruningTransactionTests(unittest.TestCase):
+    def setUp(self):
+        import copy
+
+        self.copy = copy.deepcopy
+        self.protected = FILE
+        self.old = PACKAGE + "-1.6.0-1-x86_64.pkg.tar.zst"
+        self.older = PACKAGE + "-1.5.0-1-x86_64.pkg.tar.zst"
+
+        names = [
+            name
+            for package in (
+                self.protected, self.old, self.older
+            )
+            for name in (package, package + ".sig")
+        ]
+
+        assets = {
+            name: {
+                "id": 200 + index,
+                "size": 100,
+                "sha256": "a" * 64,
+                "state": "uploaded",
+                "updated_at": "2026-11-20T22:23:07Z",
+            }
+            for index, name in enumerate(names)
+        }
+
+        release = "arch-history-" + PACKAGE
+
+        self.snapshot = {
+            "repository": "example/disposable",
+            "release": release,
+            "release_id": 100,
+            "assets": assets,
+        }
+
+        self.plan = {
+            "package": PACKAGE,
+            "history_release": release,
+            "protected": self.protected,
+            "previous_versions_to_keep": 1,
+            "dry_run": True,
+            "keep": [self.pair(self.protected)],
+            "prune": [
+                self.pair(self.older), self.pair(self.old)
+            ],
+            "verified_metadata": {
+                "package": PACKAGE,
+                "release": release,
+                "snapshot": self.snapshot,
+                "names": names,
+                "versions": {
+                    self.protected: "1.7.0-1",
+                    self.old: "1.6.0-1",
+                    self.older: "1.5.0-1",
+                },
+                "sha256": {
+                    name: record["sha256"]
+                    for name, record in assets.items()
+                },
+            },
+        }
+
+    def pair(self, name):
+        return {
+            "package": name,
+            "signature": name + ".sig",
+        }
+
+    def journal(self):
+        return publisher.prepare_pruning_transaction(
+            self.plan
+        )
+
+    def fixture_vercmp(self, args, **kwargs):
+        self.assertEqual(args[0], "vercmp")
+
+        def key(version):
+            return tuple(
+                int(part)
+                for part in version.replace("-", ".").split(".")
+            )
+
+        left, right = map(key, args[1:])
+        result = (left > right) - (left < right)
+
+        return subprocess.CompletedProcess(
+            args, 0, stdout=str(result), stderr=""
+        )
+
+    def state(self, journal=None, actual=None):
+        with patch.object(
+            subprocess, "run", side_effect=self.fixture_vercmp
+        ):
+            return publisher.pruning_transaction_state(
+                self.journal() if journal is None else journal,
+                self.snapshot if actual is None else actual,
+            )
+
+    def test_prepared_transaction(self):
+        journal = self.journal()
+
+        self.assertEqual(self.state(journal)["state"], "prepared")
+        self.assertEqual(
+            [target["name"] for target in journal["delete"]],
+            [
+                self.older, self.older + ".sig",
+                self.old, self.old + ".sig",
+            ],
+        )
+
+        self.assertEqual(
+            self.state(journal)["remaining"],
+            journal["delete"],
+        )
+
+    def test_every_interruption_boundary(self):
+        journal = self.journal()
+
+        for count in range(1, 5):
+            with self.subTest(count=count):
+                actual = self.copy(self.snapshot)
+
+                for target in journal["delete"][:count]:
+                    del actual["assets"][target["name"]]
+
+                result = self.state(journal, actual)
+
+                self.assertEqual(result["completed"], count)
+                self.assertEqual(
+                    result["remaining"],
+                    journal["delete"][count:],
+                )
+                self.assertEqual(
+                    result["state"],
+                    "complete" if count == 4 else "interrupted",
+                )
+
+    def test_retained_asset_missing_rejected(self):
+        actual = self.copy(self.snapshot)
+        del actual["assets"][self.protected]
+
+        with self.assertRaisesRegex(ValueError, "Retained"):
+            self.state(actual=actual)
+
+    def test_out_of_sequence_deletion_rejected(self):
+        actual = self.copy(self.snapshot)
+        del actual["assets"][self.older + ".sig"]
+
+        with self.assertRaisesRegex(ValueError, "sequence"):
+            self.state(actual=actual)
+
+    def test_asset_replacement_rejected(self):
+        actual = self.copy(self.snapshot)
+        actual["assets"][self.old]["id"] = 999
+
+        with self.assertRaisesRegex(ValueError, "asset change"):
+            self.state(actual=actual)
+
+    def test_asset_addition_rejected(self):
+        actual = self.copy(self.snapshot)
+        actual["assets"]["unexpected"] = {}
+
+        with self.assertRaisesRegex(ValueError, "asset change"):
+            self.state(actual=actual)
+
+    def test_release_replacement_rejected(self):
+        actual = self.copy(self.snapshot)
+        actual["release_id"] = 999
+
+        with self.assertRaisesRegex(ValueError, "identity changed"):
+            self.state(actual=actual)
+
+    def test_tampered_target_id_rejected(self):
+        journal = self.journal()
+        journal["delete"][0]["id"] = 999
+
+        with self.assertRaisesRegex(ValueError, "asset identity"):
+            self.state(journal)
+
+    def test_overlapping_partition_rejected(self):
+        self.plan["prune"].append(self.pair(self.protected))
+
+        with self.assertRaisesRegex(ValueError, "partition"):
+            self.journal()
+
+    def test_protected_pair_cannot_be_pruned(self):
+        self.plan["keep"] = [self.pair(self.old)]
+        self.plan["prune"] = [
+            self.pair(self.protected), self.pair(self.older)
+        ]
+
+        with self.assertRaisesRegex(ValueError, "Protected"):
+            self.journal()
+
+    def test_invalid_retention_count_rejected(self):
+        self.plan["previous_versions_to_keep"] = 2
+
+        with self.assertRaisesRegex(ValueError, "pair count"):
+            self.journal()
+
+    def test_inconsistent_verified_hash_rejected(self):
+        self.plan["verified_metadata"]["sha256"][FILE] = "bad"
+
+        with self.assertRaisesRegex(ValueError, "Inconsistent"):
+            self.journal()
+
+    def test_journal_snapshot_is_independent(self):
+        journal = self.journal()
+        self.snapshot["assets"][FILE]["id"] = 999
+
+        self.assertNotEqual(
+            journal["snapshot"]["assets"][FILE]["id"],
+            999,
+        )
+
+    def test_empty_deletion_sequence_is_complete(self):
+        self.plan["keep"].extend(
+            reversed(self.plan["prune"])
+        )
+        self.plan["prune"] = []
+        self.plan["previous_versions_to_keep"] = 3
+
+        journal = self.journal()
+        self.assertEqual(self.state(journal)["state"], "complete")
+        self.assertEqual(self.state(journal)["remaining"], [])
+
+
+    def test_recovery_invalid_retention_count_rejected(self):
+        journal = self.journal()
+        journal["retain"] = 2
+
+        with self.assertRaisesRegex(ValueError, "pair count"):
+            self.state(journal)
+
+    def test_recovery_invalid_pair_order_rejected(self):
+        journal = self.journal()
+        journal["delete"].reverse()
+
+        with self.assertRaisesRegex(ValueError, "pair ordering"):
+            self.state(journal)
+
+    def test_recovery_wrong_package_rejected(self):
+        journal = self.journal()
+        journal["package"] = "wrong-package"
+
+        with self.assertRaisesRegex(ValueError, "package identity"):
+            self.state(journal)
+
+    def test_recovery_duplicate_original_id_rejected(self):
+        journal = self.journal()
+        assets = journal["snapshot"]["assets"]
+        assets[SIGNATURE]["id"] = assets[FILE]["id"]
+
+        with self.assertRaisesRegex(ValueError, "asset identities"):
+            self.state(journal)
+
+    def test_recovery_incomplete_retained_pair_rejected(self):
+        journal = self.journal()
+
+        journal["keep"][1], journal["delete"][1]["name"] = (
+            journal["delete"][1]["name"],
+            journal["keep"][1],
+        )
+
+        with self.assertRaisesRegex(ValueError, "partition"):
+            self.state(journal)
+
+
+    def test_journal_preserves_verified_versions(self):
+        journal = self.journal()
+
+        self.assertEqual(
+            journal["versions"],
+            self.plan["verified_metadata"]["versions"],
+        )
+
+        self.plan["verified_metadata"]["versions"][FILE] = "bad"
+
+        self.assertEqual(
+            journal["versions"][FILE], "1.7.0-1"
+        )
+
+    def test_recovery_wrong_retained_version_rejected(self):
+        self.plan["previous_versions_to_keep"] = 2
+        self.plan["keep"] = [
+            self.pair(self.protected), self.pair(self.older)
+        ]
+        self.plan["prune"] = [self.pair(self.old)]
+
+        with self.assertRaisesRegex(
+            ValueError, "retention decision mismatch"
+        ):
+            self.state()
+
+    def test_recovery_wrong_deletion_order_rejected(self):
+        journal = self.journal()
+        targets = journal["delete"]
+
+        journal["delete"] = targets[2:] + targets[:2]
+
+        with self.assertRaisesRegex(
+            ValueError, "retention decision mismatch"
+        ):
+            self.state(journal)
+
+    def test_recovery_missing_version_metadata_rejected(self):
+        journal = self.journal()
+        del journal["versions"][self.old]
+
+        with self.assertRaisesRegex(ValueError, "inventory"):
+            self.state(journal)
+
+    def test_recovery_conflicting_version_metadata_rejected(self):
+        journal = self.journal()
+        journal["versions"][self.old] = "9.0-1"
+
+        with self.assertRaisesRegex(ValueError, "disagrees"):
+            self.state(journal)
+
+    def test_recovery_version_comparison_failure_blocks(self):
+        journal = self.journal()
+
+        with patch.object(
+            subprocess,
+            "run",
+            side_effect=subprocess.CalledProcessError(
+                1, ["vercmp"]
+            ),
+        ):
+            with self.assertRaises(subprocess.CalledProcessError):
+                publisher.pruning_transaction_state(
+                    journal, self.snapshot
+                )
+
+
+    def test_journal_canonical_round_trip(self):
+        journal = self.journal()
+
+        payload = publisher.encode_pruning_journal(journal)
+
+        self.assertEqual(
+            publisher.decode_pruning_journal(payload),
+            journal,
+        )
+
+    def test_journal_encoding_is_deterministic(self):
+        journal = self.journal()
+        reordered = dict(reversed(list(journal.items())))
+
+        self.assertEqual(
+            publisher.encode_pruning_journal(journal),
+            publisher.encode_pruning_journal(reordered),
+        )
+
+    def test_journal_duplicate_fields_rejected(self):
+        payload = b'{"package":"one","package":"two"}'
+
+        with self.assertRaisesRegex(ValueError, "Duplicate"):
+            publisher.decode_pruning_journal(payload)
+
+    def test_journal_noncanonical_content_rejected(self):
+        payload = json.dumps(
+            self.journal(), indent=2
+        ).encode("ascii")
+
+        with self.assertRaisesRegex(ValueError, "Noncanonical"):
+            publisher.decode_pruning_journal(payload)
+
+    def test_journal_missing_field_rejected(self):
+        journal = self.journal()
+        del journal["versions"]
+
+        with self.assertRaisesRegex(ValueError, "journal fields"):
+            publisher.decode_pruning_journal(
+                publisher.encode_pruning_journal(journal)
+            )
+
+    def test_journal_extra_field_rejected(self):
+        journal = self.journal()
+        journal["unexpected"] = True
+
+        with self.assertRaisesRegex(ValueError, "journal fields"):
+            publisher.decode_pruning_journal(
+                publisher.encode_pruning_journal(journal)
+            )
+
+    def test_journal_invalid_schema_rejected(self):
+        for version in (0, 2, True):
+            with self.subTest(version=version):
+                journal = self.journal()
+                journal["schema_version"] = version
+
+                with self.assertRaisesRegex(
+                    ValueError, "Unsupported"
+                ):
+                    publisher.decode_pruning_journal(
+                        publisher.encode_pruning_journal(journal)
+                    )
+
+
+    def journal_remote(self, journal):
+        import hashlib
+
+        payload = publisher.encode_pruning_journal(journal)
+        remote = self.copy(self.snapshot)
+
+        remote["assets"][publisher.JOURNAL_NAME] = {
+            "id": 999,
+            "size": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "state": "uploaded",
+            "updated_at": "2026-11-23T22:00:00Z",
+        }
+
+        return remote, payload
+
+    def test_missing_remote_journal_returns_none(self):
+        with patch.object(
+            publisher, "history_snapshot",
+            return_value=self.snapshot,
+        ):
+            self.assertIsNone(
+                publisher.load_pruning_journal(
+                    self.snapshot["release"]
+                )
+            )
+
+    def test_remote_journal_loads_verified_state(self):
+        journal = self.journal()
+        remote, payload = self.journal_remote(journal)
+
+        def fetch(release, name, directory):
+            path = directory / name
+            path.write_bytes(payload)
+            return path
+
+        with (
+            patch.object(
+                publisher, "history_snapshot",
+                return_value=remote,
+            ),
+            patch.object(
+                publisher, "download", side_effect=fetch
+            ),
+            patch.object(
+                subprocess, "run",
+                side_effect=self.fixture_vercmp,
+            ),
+        ):
+            result = publisher.load_pruning_journal(
+                remote["release"]
+            )
+
+        self.assertEqual(result["journal"], journal)
+        self.assertEqual(result["state"]["state"], "prepared")
+        self.assertEqual(result["journal_asset"]["id"], 999)
+
+    def test_remote_journal_recovers_interrupted_pair(self):
+        journal = self.journal()
+        remote, payload = self.journal_remote(journal)
+
+        del remote["assets"][journal["delete"][0]["name"]]
+
+        def fetch(release, name, directory):
+            path = directory / name
+            path.write_bytes(payload)
+            return path
+
+        with (
+            patch.object(
+                publisher, "history_snapshot",
+                return_value=remote,
+            ),
+            patch.object(
+                publisher, "download", side_effect=fetch
+            ),
+            patch.object(
+                subprocess, "run",
+                side_effect=self.fixture_vercmp,
+            ),
+        ):
+            result = publisher.load_pruning_journal(
+                remote["release"]
+            )
+
+        self.assertEqual(
+            result["state"]["state"], "interrupted"
+        )
+        self.assertEqual(result["state"]["completed"], 1)
+
+    def test_corrupted_remote_journal_rejected(self):
+        journal = self.journal()
+        remote, payload = self.journal_remote(journal)
+
+        def fetch(release, name, directory):
+            path = directory / name
+            path.write_bytes(b"x" * len(payload))
+            return path
+
+        with (
+            patch.object(
+                publisher, "history_snapshot",
+                return_value=remote,
+            ),
+            patch.object(
+                publisher, "download", side_effect=fetch
+            ),
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "digest mismatch"
+            ):
+                publisher.load_pruning_journal(
+                    remote["release"]
+                )
+
+    def test_remote_journal_persisted_without_clobber(self):
+        journal = self.journal()
+        remote, payload = self.journal_remote(journal)
+
+        def upload(*args):
+            self.assertEqual(
+                args[:4],
+                ("gh", "release", "upload", remote["release"]),
+            )
+            self.assertNotIn("--clobber", args)
+            self.assertEqual(Path(args[4]).read_bytes(), payload)
+            return ""
+
+        def fetch(release, name, directory):
+            path = directory / name
+            path.write_bytes(payload)
+            return path
+
+        with (
+            patch.object(
+                publisher, "history_snapshot",
+                side_effect=[self.snapshot, remote, remote],
+            ),
+            patch.object(
+                publisher, "run", side_effect=upload
+            ) as command,
+            patch.object(
+                publisher, "download", side_effect=fetch
+            ),
+            patch.object(
+                subprocess, "run",
+                side_effect=self.fixture_vercmp,
+            ),
+        ):
+            result = publisher.persist_pruning_journal(journal)
+
+        command.assert_called_once()
+        self.assertEqual(result["journal"], journal)
+        self.assertEqual(result["state"]["state"], "prepared")
+
+    def test_existing_remote_journal_blocks_upload(self):
+        journal = self.journal()
+        remote, payload = self.journal_remote(journal)
+
+        with (
+            patch.object(
+                publisher, "history_snapshot",
+                return_value=remote,
+            ),
+            patch.object(publisher, "run") as command,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "snapshot changed"
+            ):
+                publisher.persist_pruning_journal(journal)
+
+        command.assert_not_called()
+
+    def test_failed_journal_upload_blocks_transaction(self):
+        journal = self.journal()
+
+        with (
+            patch.object(
+                publisher, "history_snapshot",
+                return_value=self.snapshot,
+            ),
+            patch.object(
+                publisher, "run",
+                side_effect=subprocess.CalledProcessError(
+                    1, ["gh", "release", "upload"]
+                ),
+            ),
+            patch.object(
+                publisher, "load_pruning_journal"
+            ) as load,
+            patch.object(
+                subprocess, "run",
+                side_effect=self.fixture_vercmp,
+            ),
+        ):
+            with self.assertRaises(subprocess.CalledProcessError):
+                publisher.persist_pruning_journal(journal)
+
+        load.assert_not_called()
+
+    def test_missing_journal_after_upload_blocks(self):
+        journal = self.journal()
+
+        with (
+            patch.object(
+                publisher, "history_snapshot",
+                return_value=self.snapshot,
+            ),
+            patch.object(publisher, "run", return_value=""),
+            patch.object(
+                publisher, "load_pruning_journal",
+                return_value=None,
+            ),
+            patch.object(
+                subprocess, "run",
+                side_effect=self.fixture_vercmp,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "journal missing"
+            ):
+                publisher.persist_pruning_journal(journal)
+
+
+    def execute_remote(
+        self,
+        journal,
+        completed=0,
+        fail_at=None,
+        apply_before_failure=False,
+        no_progress=False,
+        policy=None,
+        replace_journal=False,
+        remove_retained=False,
+    ):
+        remote, payload = self.journal_remote(journal)
+
+        for target in journal["delete"][:completed]:
+            del remote["assets"][target["name"]]
+
+        operations = []
+        self.execution_remote = remote
+        self.execution_operations = operations
+
+        def snapshot(release):
+            self.assertEqual(release, remote["release"])
+            return self.copy(remote)
+
+        def fetch(release, name, directory):
+            path = directory / name
+            path.write_bytes(payload)
+            return path
+
+        def command(*args):
+            self.assertEqual(
+                args[:4],
+                ("gh", "api", "--method", "DELETE"),
+            )
+
+            asset_id = int(args[4].rsplit("/", 1)[1])
+
+            self.assertEqual(
+                args[4],
+                "repos/example/disposable/releases/assets/"
+                + str(asset_id),
+            )
+
+            names = [
+                name for name, record
+                in remote["assets"].items()
+                if record["id"] == asset_id
+            ]
+
+            self.assertEqual(len(names), 1)
+
+            name = names[0]
+            operations.append(name)
+
+            failing = fail_at == len(operations)
+
+            if failing and not apply_before_failure:
+                raise subprocess.CalledProcessError(1, args)
+
+            if not no_progress:
+                del remote["assets"][name]
+
+            if replace_journal and len(operations) == 1:
+                remote["assets"][publisher.JOURNAL_NAME]["id"] = 998
+
+            if remove_retained and len(operations) == 1:
+                del remote["assets"][FILE]
+
+            if failing:
+                raise subprocess.CalledProcessError(1, args)
+
+            return ""
+
+        with (
+            patch.object(
+                publisher, "history_snapshot",
+                side_effect=snapshot,
+            ),
+            patch.object(
+                publisher, "download", side_effect=fetch
+            ),
+            patch.object(
+                publisher, "run", side_effect=command
+            ),
+            patch.object(
+                publisher, "current_retention_count",
+                return_value=(
+                    journal["retain"] if policy is None
+                    else policy
+                ),
+            ),
+            patch.object(
+                subprocess, "run",
+                side_effect=self.fixture_vercmp,
+            ),
+        ):
+            return publisher.execute_pruning_transaction(
+                remote["release"]
+            )
+
+    def test_executor_deletes_only_authorized_assets(self):
+        journal = self.journal()
+        result = self.execute_remote(journal)
+
+        self.assertEqual(result["state"], "complete")
+        self.assertEqual(result["deleted"], 4)
+
+        self.assertEqual(
+            self.execution_operations,
+            [
+                target["name"]
+                for target in journal["delete"]
+            ] + [publisher.JOURNAL_NAME],
+        )
+
+        self.assertEqual(
+            set(self.execution_remote["assets"]),
+            set(journal["keep"]),
+        )
+
+    def test_executor_resumes_every_interruption_boundary(self):
+        journal = self.journal()
+
+        for count in range(5):
+            with self.subTest(count=count):
+                result = self.execute_remote(
+                    journal, completed=count
+                )
+
+                self.assertEqual(result["state"], "complete")
+                self.assertEqual(result["deleted"], 4 - count)
+
+                self.assertEqual(
+                    self.execution_operations,
+                    [
+                        target["name"]
+                        for target in journal["delete"][count:]
+                    ] + [publisher.JOURNAL_NAME],
+                )
+
+    def test_executor_failed_delete_preserves_journal(self):
+        journal = self.journal()
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.execute_remote(journal, fail_at=2)
+
+        assets = self.execution_remote["assets"]
+
+        self.assertIn(publisher.JOURNAL_NAME, assets)
+        self.assertNotIn(journal["delete"][0]["name"], assets)
+        self.assertIn(journal["delete"][1]["name"], assets)
+
+    def test_executor_lost_response_preserves_recovery(self):
+        journal = self.journal()
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.execute_remote(
+                journal,
+                fail_at=1,
+                apply_before_failure=True,
+            )
+
+        assets = self.execution_remote["assets"]
+
+        self.assertIn(publisher.JOURNAL_NAME, assets)
+        self.assertNotIn(journal["delete"][0]["name"], assets)
+
+        result = self.execute_remote(journal, completed=1)
+        self.assertEqual(result["deleted"], 3)
+
+    def test_executor_no_progress_blocks(self):
+        with self.assertRaisesRegex(ValueError, "deletion progress"):
+            self.execute_remote(
+                self.journal(), no_progress=True
+            )
+
+        self.assertEqual(len(self.execution_operations), 1)
+
+        self.assertIn(
+            publisher.JOURNAL_NAME,
+            self.execution_remote["assets"],
+        )
+
+    def test_executor_changed_policy_blocks(self):
+        with self.assertRaisesRegex(ValueError, "policy changed"):
+            self.execute_remote(self.journal(), policy=2)
+
+        self.assertEqual(self.execution_operations, [])
+
+    def test_executor_replaced_journal_blocks(self):
+        with self.assertRaisesRegex(ValueError, "journal changed"):
+            self.execute_remote(
+                self.journal(), replace_journal=True
+            )
+
+        self.assertEqual(len(self.execution_operations), 1)
+
+    def test_executor_missing_retained_asset_blocks(self):
+        with self.assertRaisesRegex(ValueError, "Retained"):
+            self.execute_remote(
+                self.journal(), remove_retained=True
+            )
+
+        self.assertEqual(len(self.execution_operations), 1)
+
+    def test_executor_failed_journal_cleanup_is_recoverable(self):
+        journal = self.journal()
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.execute_remote(journal, fail_at=5)
+
+        self.assertEqual(
+            set(self.execution_remote["assets"]),
+            set(journal["keep"]) | {publisher.JOURNAL_NAME},
+        )
+
+        result = self.execute_remote(journal, completed=4)
+
+        self.assertEqual(result["deleted"], 0)
+        self.assertEqual(
+            self.execution_operations,
+            [publisher.JOURNAL_NAME],
+        )
+
+    def test_executor_without_journal_is_noop(self):
+        with (
+            patch.object(
+                publisher, "history_snapshot",
+                return_value=self.snapshot,
+            ),
+            patch.object(publisher, "run") as command,
+        ):
+            result = publisher.execute_pruning_transaction(
+                self.snapshot["release"]
+            )
+
+        self.assertEqual(result["state"], "no_transaction")
+        self.assertEqual(result["deleted"], 0)
+        command.assert_not_called()
+
+
+    def orchestrate(
+        self,
+        existing=None,
+        planner_error=None,
+        persistence_error=None,
+        execution_state="complete",
+        policy=None,
+    ):
+        from contextlib import ExitStack
+
+        journal = self.journal()
+        calls = []
+        self.orchestration_calls = calls
+
+        def load(release):
+            self.assertEqual(release, self.snapshot["release"])
+            calls.append("load")
+            return existing
+
+        def plan(package, fingerprint, protected):
+            self.assertEqual(package, PACKAGE)
+            self.assertEqual(protected, FILE)
+            calls.append("plan")
+
+            if planner_error is not None:
+                raise planner_error
+
+            return self.plan
+
+        def persist(candidate):
+            calls.append("persist")
+            self.assertEqual(candidate, journal)
+
+            if persistence_error is not None:
+                raise persistence_error
+
+            return {
+                "journal": journal,
+                "state": {"state": "prepared"},
+            }
+
+        def execute(release, expected=None):
+            self.assertEqual(release, self.snapshot["release"])
+
+            self.assertEqual(
+                expected,
+                existing if existing is not None else {
+                    "journal": journal,
+                    "state": {"state": "prepared"},
+                },
+            )
+
+            calls.append("execute")
+
+            return {
+                "state": execution_state,
+                "deleted": len(journal["delete"]),
+            }
+
+        def unchanged(snapshot):
+            self.assertEqual(snapshot, journal["snapshot"])
+            calls.append("verify")
+            return snapshot
+
+        with ExitStack() as stack:
+            for name, callback in (
+                ("load_pruning_journal", load),
+                ("plan_verified_history", plan),
+                ("persist_pruning_journal", persist),
+                ("execute_pruning_transaction", execute),
+                ("require_unchanged_snapshot", unchanged),
+            ):
+                stack.enter_context(
+                    patch.object(
+                        publisher, name, side_effect=callback
+                    )
+                )
+
+            stack.enter_context(
+                patch.object(
+                    publisher,
+                    "current_retention_count",
+                    return_value=(
+                        journal["retain"] if policy is None
+                        else policy
+                    ),
+                )
+            )
+
+            stack.enter_context(
+                patch.object(
+                    subprocess, "run",
+                    side_effect=self.fixture_vercmp,
+                )
+            )
+
+            return publisher.prune_verified_history(
+                PACKAGE, "A" * 40, FILE
+            )
+
+    def test_orchestration_persists_before_execution(self):
+        result = self.orchestrate()
+
+        self.assertEqual(result["state"], "complete")
+        self.assertFalse(result["recovered"])
+
+        self.assertEqual(
+            self.orchestration_calls,
+            ["load", "plan", "persist", "execute"],
+        )
+
+    def test_orchestration_recovery_never_replans(self):
+        result = self.orchestrate(existing={"journal": self.journal()})
+
+        self.assertTrue(result["recovered"])
+
+        self.assertEqual(
+            self.orchestration_calls,
+            ["load", "execute"],
+        )
+
+    def test_orchestration_within_limit_is_read_only(self):
+        self.plan["keep"].extend(
+            reversed(self.plan["prune"])
+        )
+        self.plan["prune"] = []
+        self.plan["previous_versions_to_keep"] = 3
+
+        result = self.orchestrate()
+
+        self.assertEqual(result["state"], "within_limit")
+        self.assertEqual(result["deleted"], 0)
+
+        self.assertEqual(
+            self.orchestration_calls,
+            ["load", "plan", "verify"],
+        )
+
+    def test_orchestration_planner_failure_blocks(self):
+        with self.assertRaisesRegex(ValueError, "verification"):
+            self.orchestrate(
+                planner_error=ValueError("verification failed")
+            )
+
+        self.assertEqual(
+            self.orchestration_calls,
+            ["load", "plan"],
+        )
+
+    def test_orchestration_persistence_failure_blocks(self):
+        with self.assertRaisesRegex(ValueError, "persistence"):
+            self.orchestrate(
+                persistence_error=ValueError("persistence failed")
+            )
+
+        self.assertEqual(
+            self.orchestration_calls,
+            ["load", "plan", "persist"],
+        )
+
+    def test_orchestration_policy_change_blocks_persistence(self):
+        with self.assertRaisesRegex(ValueError, "policy changed"):
+            self.orchestrate(policy=2)
+
+        self.assertEqual(
+            self.orchestration_calls,
+            ["load", "plan"],
+        )
+
+    def test_orchestration_missing_transaction_blocks_success(self):
+        with self.assertRaisesRegex(
+            ValueError, "New transaction not completed"
+        ):
+            self.orchestrate(
+                execution_state="no_transaction"
+            )
+
+    def test_orchestration_incomplete_recovery_blocks_success(self):
+        with self.assertRaisesRegex(
+            ValueError, "Existing transaction not completed"
+        ):
+            self.orchestrate(
+                existing={"journal": self.journal()},
+                execution_state="no_transaction",
+            )
+
+        self.assertEqual(
+            self.orchestration_calls,
+            ["load", "execute"],
+        )
+
+
+    def test_executor_initial_journal_replacement_blocks(self):
+        journal = self.journal()
+
+        authorized = {
+            "journal": journal,
+            "journal_asset": {"id": 999},
+            "state": self.state(journal),
+        }
+
+        replacement = self.copy(authorized)
+        replacement["journal_asset"]["id"] = 998
+
+        with (
+            patch.object(
+                publisher, "load_pruning_journal",
+                return_value=replacement,
+            ),
+            patch.object(publisher, "run") as command,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "Authorized pruning journal changed"
+            ):
+                publisher.execute_pruning_transaction(
+                    self.snapshot["release"],
+                    expected=authorized,
+                )
+
+        command.assert_not_called()
+
+    def test_executor_initial_progress_change_blocks(self):
+        journal = self.journal()
+
+        authorized = {
+            "journal": journal,
+            "journal_asset": {"id": 999},
+            "state": self.state(journal),
+        }
+
+        actual = self.copy(self.snapshot)
+        del actual["assets"][journal["delete"][0]["name"]]
+
+        changed = self.copy(authorized)
+        changed["state"] = self.state(journal, actual)
+
+        with (
+            patch.object(
+                publisher, "load_pruning_journal",
+                return_value=changed,
+            ),
+            patch.object(publisher, "run") as command,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "Authorized pruning journal changed"
+            ):
+                publisher.execute_pruning_transaction(
+                    self.snapshot["release"],
+                    expected=authorized,
+                )
+
+        command.assert_not_called()
+
+    def test_executor_initial_journal_disappearance_blocks(self):
+        authorized = {
+            "journal": self.journal(),
+            "journal_asset": {"id": 999},
+            "state": {"state": "prepared"},
+        }
+
+        with (
+            patch.object(
+                publisher, "load_pruning_journal",
+                return_value=None,
+            ),
+            patch.object(publisher, "run") as command,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "Authorized pruning journal changed"
+            ):
+                publisher.execute_pruning_transaction(
+                    self.snapshot["release"],
+                    expected=authorized,
+                )
+
+        command.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
