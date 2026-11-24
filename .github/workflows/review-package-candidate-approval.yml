@@ -125,10 +125,12 @@ jobs:
       - name: Install selection dependencies
         run: |
           set -euo pipefail
-          pacman -Syu --noconfirm --needed python git github-cli curl
-          command -v makepkg
-          command -v runuser
-          command -v vercmp
+          pacman -Syu --noconfirm --needed python git github-cli curl diffutils
+
+          for tool in python3 git gh curl makepkg runuser vercmp diff cmp sort useradd install mktemp chmod; do
+            command -v "$tool" >/dev/null
+            echo "PASS: $tool"
+          done
 
       - name: Checkout production source
         uses: actions/checkout@v6
