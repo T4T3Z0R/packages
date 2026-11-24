@@ -20,6 +20,14 @@ from validation_ledger import classify
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 REPOSITORY = "T4T3Z0R/packages"
 
+# First introduction of the shared package manifest.
+# Only verified ancestors of this immutable commit can
+# be treated as manifest-less legacy history.
+MANIFEST_INTRODUCTION = (
+    "c9d29099f560c002daf0db7a80ef090cf1cfe66c"
+)
+MANIFEST_PATH = "arch/packages/manifest.json"
+
 
 def git(root, *args):
     return subprocess.check_output(
@@ -30,18 +38,66 @@ def git(root, *args):
 
 
 def historical_identity(root, sha, package):
-    """Return fingerprint or None for a known legacy package entry.
+    """Return fingerprint or None for verified legacy history.
 
-    Missing commits and malformed evidence raise an exception.
+    Missing commits, unexpected manifest absence, and malformed
+    evidence raise an exception.
     """
     if not isinstance(sha, str) or not SHA.fullmatch(sha):
         raise ValueError("Invalid historical Git commit")
 
     git(root, "cat-file", "-e", f"{sha}^{{commit}}")
 
+    entry = git(
+        root, "ls-tree", sha, "--", MANIFEST_PATH
+    )
+
+    if not entry:
+        # A successful tree lookup establishes actual absence,
+        # rather than an unreadable commit or failed Git operation.
+        git(
+            root, "cat-file", "-e",
+            f"{MANIFEST_INTRODUCTION}^{{commit}}"
+        )
+
+        git(
+            root, "cat-file", "-e",
+            f"{MANIFEST_INTRODUCTION}:{MANIFEST_PATH}"
+        )
+
+        git(
+            root, "merge-base", "--is-ancestor",
+            MANIFEST_INTRODUCTION, "HEAD"
+        )
+
+        if sha == MANIFEST_INTRODUCTION:
+            raise ValueError(
+                "Manifest missing at registry introduction"
+            )
+
+        ancestry = subprocess.run(
+            [
+                "git", "-C", str(root),
+                "merge-base", "--is-ancestor",
+                sha, MANIFEST_INTRODUCTION,
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        if ancestry.returncode == 0:
+            return None
+
+        if ancestry.returncode == 1:
+            raise ValueError(
+                f"Unexpected missing historical manifest: {sha}"
+            )
+
+        ancestry.check_returncode()
+
     raw = git(
         root, "show",
-        f"{sha}:arch/packages/manifest.json"
+        f"{sha}:{MANIFEST_PATH}"
     )
     manifest = json.loads(raw)
 
@@ -110,6 +166,10 @@ def evaluate(api, repo, package, target, historical):
         old = historical(sha, package)
 
         if old is None:
+            # Legacy runs have no comparable fingerprint.
+            # Never overlap an active legacy publication.
+            if status != "completed":
+                active.append(run_id)
             continue
 
         if old != target:

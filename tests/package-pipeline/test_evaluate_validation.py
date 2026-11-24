@@ -207,6 +207,160 @@ def api_with_attempts(*records):
 
     return api
 
+class HistoricalIdentityTests(unittest.TestCase):
+    def setUp(self):
+        import subprocess
+        import tempfile
+        from unittest.mock import patch
+
+        import evaluate_validation as module
+
+        self.module = module
+        self.subprocess = subprocess
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+
+        self.repo = Path(temporary.name)
+
+        self.git("init", "-q")
+        self.git("config", "user.name", "History Test")
+        self.git(
+            "config", "user.email",
+            "history-test@example.invalid"
+        )
+        self.git("config", "commit.gpgsign", "false")
+
+        self.legacy = self.commit("Pre-registry history")
+
+        self.path = (
+            self.repo / "arch/packages/manifest.json"
+        )
+        self.path.parent.mkdir(parents=True)
+
+        self.path.write_text('{"packages": {}}')
+
+        self.introduced = self.commit(
+            "Introduce package registry"
+        )
+
+        boundary = patch.object(
+            module,
+            "MANIFEST_INTRODUCTION",
+            self.introduced,
+        )
+
+        boundary.start()
+        self.addCleanup(boundary.stop)
+
+    def git(self, *args):
+        return self.subprocess.check_output(
+            ["git", "-C", str(self.repo), *args],
+            text=True,
+            stderr=self.subprocess.PIPE,
+        ).strip()
+
+    def commit(self, message):
+        self.git("add", "-A")
+        self.git(
+            "commit", "-q", "--allow-empty",
+            "-m", message
+        )
+        return self.git("rev-parse", "HEAD")
+
+    def identity(self, sha):
+        return self.module.historical_identity(
+            self.repo, sha, "noctalia-custom"
+        )
+
+    def test_real_pre_registry_ancestor_excluded(self):
+        self.assertIsNone(
+            self.identity(self.legacy)
+        )
+
+    def test_real_unregistered_package_excluded(self):
+        self.assertIsNone(
+            self.identity(self.introduced)
+        )
+
+    def test_manifest_deleted_after_introduction(self):
+        self.path.unlink()
+        deleted = self.commit("Delete manifest")
+
+        with self.assertRaisesRegex(
+            ValueError, "Unexpected missing"
+        ):
+            self.identity(deleted)
+
+    def test_manifestless_divergent_history_rejected(self):
+        self.git("checkout", "-q", "--detach", self.legacy)
+
+        divergent = self.commit(
+            "Unrelated manifest-less branch"
+        )
+
+        self.git(
+            "checkout", "-q", "--detach",
+            self.introduced
+        )
+
+        with self.assertRaisesRegex(
+            ValueError, "Unexpected missing"
+        ):
+            self.identity(divergent)
+
+    def test_missing_commit_rejected(self):
+        with self.assertRaises(
+            self.subprocess.CalledProcessError
+        ):
+            self.identity("f" * 40)
+
+    def test_invalid_sha_rejected(self):
+        with self.assertRaisesRegex(
+            ValueError, "Invalid historical Git commit"
+        ):
+            self.identity("HEAD")
+
+    def test_malformed_manifest_rejected(self):
+        self.path.write_text("not JSON")
+        malformed = self.commit("Malformed manifest")
+
+        with self.assertRaises(ValueError):
+            self.identity(malformed)
+
+    def test_malformed_packages_mapping_rejected(self):
+        self.path.write_text('{"packages": []}')
+        malformed = self.commit("Malformed registry")
+
+        with self.assertRaisesRegex(
+            ValueError, "Malformed historical packages"
+        ):
+            self.identity(malformed)
+
+    def test_missing_registry_boundary_rejected(self):
+        from unittest.mock import patch
+
+        with patch.object(
+            self.module,
+            "MANIFEST_INTRODUCTION",
+            "f" * 40,
+        ):
+            with self.assertRaises(
+                self.subprocess.CalledProcessError
+            ):
+                self.identity(self.legacy)
+
+    def test_registry_boundary_outside_checkout_rejected(self):
+        self.git(
+            "checkout", "-q", "--detach", self.legacy
+        )
+
+        with self.assertRaises(
+            self.subprocess.CalledProcessError
+        ):
+            self.identity(self.legacy)
+
+
 class EvaluationTests(unittest.TestCase):
     def check(self, runs, old=FP, **kwargs):
         return evaluate(
@@ -248,6 +402,14 @@ class EvaluationTests(unittest.TestCase):
     def test_legacy_history_excluded(self):
         result = self.check([run()], old=None)
         self.assertEqual(result["decision"], "needs_validation")
+
+    def test_active_legacy_history_blocks_dispatch(self):
+        result = self.check(
+            [run(status="in_progress", conclusion=None)],
+            old=None,
+        )
+        self.assertEqual(result["decision"], "in_flight")
+        self.assertEqual(result["active_runs"], [123])
 
     def test_other_fingerprint_excluded(self):
         result = self.check([run()], old=OLD)
