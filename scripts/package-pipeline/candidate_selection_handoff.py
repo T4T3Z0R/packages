@@ -14,6 +14,7 @@ from discover_upstream import DEFAULT_MANIFEST
 from github_validation_history import github_api
 from report_upstream import report
 from select_package_validation import TEMPLATE_PACKAGES
+from fixed_recipe_selection import FIXED_PACKAGES
 
 MAX_PAGES = 100
 PER_PAGE = 100
@@ -219,16 +220,16 @@ def plan(event, live_issue, upstream, pulls, manifest):
             "pr_merged": prior.get("merged_at") is not None,
         }
 
-    if package not in TEMPLATE_PACKAGES:
-        return {
-            **result,
-            "status": "recipe_review_required",
-            "reason": "Coordinated recipe and source validation required",
-        }
+    if package in TEMPLATE_PACKAGES:
+        status = "template_pr_ready"
+    elif package in FIXED_PACKAGES:
+        status = "fixed_pr_ready"
+    else:
+        raise ValueError("Unsupported source-selection recipe")
 
     return {
         **result,
-        "status": "template_pr_ready",
+        "status": status,
         "branch": branch,
         "pr_title": f"Select {package} candidate {candidate}",
         "pr_marker": issue_marker,
