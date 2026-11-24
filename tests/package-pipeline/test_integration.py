@@ -360,7 +360,9 @@ class RepositoryIntegrationTests(unittest.TestCase):
         old.unlink()
         Path(str(old) + ".sig").unlink()
 
-        self.make_package("yazi", "2.0", self.fixture)
+        candidate = self.root / "package-output" / self.env["PACKAGE_FILE"]
+        for asset in (candidate, Path(str(candidate) + ".sig")):
+            (self.fixture / asset.name).write_bytes(asset.read_bytes())
 
         result = self.assemble()
 
@@ -381,11 +383,12 @@ class RepositoryIntegrationTests(unittest.TestCase):
         old.unlink()
         Path(str(old) + ".sig").unlink()
 
-        self.make_package("yazi-extra", "2.0", self.fixture)
         extra = self.make_package(
             "yazi-extra", "2.0",
             self.root / "package-output",
         )
+        for asset in (extra, Path(str(extra) + ".sig")):
+            (self.fixture / asset.name).write_bytes(asset.read_bytes())
         self.env["ADDITIONAL_PACKAGE_FILES"] = extra.name
 
         result = self.assemble()
@@ -407,10 +410,9 @@ class RepositoryIntegrationTests(unittest.TestCase):
         old.unlink()
         Path(str(old) + ".sig").unlink()
 
-        existing = self.make_package(
-            "yazi", "2.0", self.fixture
-        )
-        existing.unlink()
+        candidate = self.root / "package-output" / self.env["PACKAGE_FILE"]
+        signature = Path(str(candidate) + ".sig")
+        (self.fixture / signature.name).write_bytes(signature.read_bytes())
 
         result = self.assemble()
 
