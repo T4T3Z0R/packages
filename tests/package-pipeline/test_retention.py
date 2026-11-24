@@ -84,6 +84,37 @@ class RetentionPlannerTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Candidate does not match", result.stderr)
 
+    def test_debug_companion_retention(self):
+        for package in (
+            "keepassxc-debug",
+            "syncthing-discosrv-debug",
+            "syncthing-relaysrv-debug",
+        ):
+            with self.subTest(package=package):
+                old = package + "-1.0-1-any.pkg.tar.zst"
+                new = package + "-2.0-1-any.pkg.tar.zst"
+
+                result = self.plan(
+                    [old, old + ".sig"],
+                    package=package,
+                    candidate=new,
+                )
+
+                self.assertEqual(
+                    result.returncode, 0, result.stderr
+                )
+
+                plan = json.loads(result.stdout)
+
+                self.assertEqual(
+                    plan["previous_versions_to_keep"], 3
+                )
+                self.assertEqual(
+                    plan["history_release"],
+                    "arch-history-" + package,
+                )
+                self.assertTrue(plan["archive_required"])
+
     def test_no_retention_policy(self):
         candidate = "broot-2.0-1-any.pkg.tar.zst"
         old = "broot-1.0-1-any.pkg.tar.zst"
