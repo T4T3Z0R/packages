@@ -1,5 +1,6 @@
 import copy
 import importlib.util
+import sys
 import json
 import tempfile
 import unittest
@@ -8,6 +9,7 @@ from io import StringIO
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts/package-pipeline"))
 VALIDATOR = ROOT / "scripts/package-pipeline/validate_manifest.py"
 MANIFEST = ROOT / "arch/packages/manifest.json"
 

@@ -2,15 +2,20 @@
 
 import re
 
+import xfce_source
+
 from verify_source_contract import assignment
 from resolve_candidate import compare_versions
 
 FIXED_PACKAGES = frozenset({
     "ghostty", "keepassxc", "syncthing", "wezterm",
-    "moonlight-qt", "yazi", "broot",
+    "moonlight-qt", "yazi", "broot", "thunar",
 })
 
 SOURCE_POLICIES = {
+    "thunar": (
+        xfce_source.UPSTREAMS["thunar"], xfce_source.POLICY
+    ),
     "broot": (
         "Canop/broot", "stable-git-tag"
     ),
@@ -44,6 +49,7 @@ CHECKSUM_POLICIES = {
     "moonlight-qt": ("sha512", SHA512),
     "yazi": ("sha256", SHA256),
     "broot": ("sha256", SHA256),
+    "thunar": ("sha256", SHA256),
 }
 COMMIT = re.compile(r"[0-9a-f]{40}")
 VERSION = re.compile(r"[0-9]+(?:[.][0-9]+){2,3}")
@@ -235,11 +241,22 @@ def render_recipe(
             "Unexpected stable-source metadata fields",
         )
 
+        if package == "thunar":
+            selected_version = xfce_source.validate_source(
+                package, config["upstream"], selected
+            )
+            candidate_version = xfce_source.stable_version(
+                candidate
+            )
+        else:
+            selected_version = selected.removeprefix("v")
+            candidate_version = candidate.removeprefix("v")
+
         require(
-            VERSION.fullmatch(candidate.removeprefix("v"))
-            and VERSION.fullmatch(selected.removeprefix("v"))
-            and version == candidate.removeprefix("v")
-            and old_version == selected.removeprefix("v"),
+            VERSION.fullmatch(candidate_version)
+            and VERSION.fullmatch(selected_version)
+            and version == candidate_version
+            and old_version == selected_version,
             "Stable version does not match selection",
         )
 

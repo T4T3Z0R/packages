@@ -17,6 +17,7 @@ class WorkflowParityTests(unittest.TestCase):
             "publish-moonlight-qt.yml",
             "publish-yazi.yml",
             "publish-broot.yml",
+            "publish-thunar.yml",
             "publish-syncthing.yml",
         )
 

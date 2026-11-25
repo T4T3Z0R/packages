@@ -118,6 +118,7 @@ class RetentionPlannerTests(unittest.TestCase):
     def test_two_version_package_retention(self):
         for package in (
             "yazi", "yazi-debug", "broot", "broot-debug",
+            "thunar", "thunar-debug",
         ):
             with self.subTest(package=package):
                 old = package + "-1.0-1-any.pkg.tar.zst"

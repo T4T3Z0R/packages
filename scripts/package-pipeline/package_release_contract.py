@@ -14,6 +14,9 @@ class PackageContract:
 
 
 CONTRACTS = {
+    "thunar": PackageContract(
+        "publish-thunar.yml",
+        "Build and validate unsigned Thunar", "fixed"),
     "broot": PackageContract(
         "publish-broot.yml",
         "Build and validate unsigned Broot", "fixed"),

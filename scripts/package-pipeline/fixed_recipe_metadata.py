@@ -9,6 +9,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import xfce_source
+
 from fixed_recipe_selection import (
     COMMIT, VERSION, SOURCE_POLICIES, require,
     CHECKSUM_POLICIES,
@@ -231,6 +233,43 @@ def keepassxc_checksum(version):
         return parse_native_checksum(output)
 
 
+def thunar_checksum(version):
+    tag = "thunar-" + version
+
+    xfce_source.validate_source(
+        "thunar", xfce_source.UPSTREAMS["thunar"], tag
+    )
+
+    require(
+        os.geteuid() != 0,
+        "Native checksum resolver requires unprivileged user",
+    )
+
+    # Source-only recipe. Preserve the official Git source
+    # declaration without executing upstream build code.
+    recipe = "\n".join((
+        "pkgname=thunar",
+        f"pkgver={version}",
+        "pkgrel=1",
+        "arch=('any')",
+        'source=("git+https://gitlab.xfce.org/'
+        'xfce/thunar.git#tag=$pkgname-$pkgver")',
+        "sha256sums=('"
+        + "0" * 64 + "')",
+        "",
+    ))
+
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        (root / "PKGBUILD").write_text(recipe)
+
+        output = run([
+            "makepkg", "--geninteg", "--noconfirm",
+        ], cwd=root)
+
+        return parse_native_checksum(output)
+
+
 def resolve(package, candidate, config):
     require(
         package in SOURCE_POLICIES,
@@ -273,16 +312,22 @@ def resolve(package, candidate, config):
         result["pkgver"] = wezterm_version(candidate)
         return result
 
-    version = candidate.removeprefix("v")
+    if package == "thunar":
+        xfce_source.validate_source(
+            package, config["upstream"], config["source_ref"]
+        )
+        version = xfce_source.stable_version(candidate)
+        expected = "thunar-" + version
+    else:
+        version = candidate.removeprefix("v")
+        expected = (
+            version if package == "keepassxc"
+            else "v" + version
+        )
 
     require(
         VERSION.fullmatch(version),
         "Invalid stable version",
-    )
-
-    expected = (
-        version if package == "keepassxc"
-        else "v" + version
     )
 
     require(
@@ -292,6 +337,8 @@ def resolve(package, candidate, config):
 
     if package == "keepassxc":
         checksum = keepassxc_checksum(version)
+    elif package == "thunar":
+        checksum = thunar_checksum(version)
     else:
         checksum = archive_checksum(package, version)
 

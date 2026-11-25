@@ -6,6 +6,8 @@ import json
 import re
 from pathlib import Path
 
+import xfce_source
+
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "arch/packages/manifest.json"
 
@@ -42,7 +44,13 @@ def verify(name, config, root=ROOT):
     policy = config["release_policy"]
     selected = config["source_ref"]
 
-    if policy in ("stable-tag", "stable-git-tag", "pinned-tag"):
+    if policy == xfce_source.POLICY:
+        expected = xfce_source.validate_source(
+            name, config["upstream"], selected
+        )
+        actual = assignment(source, "pkgver")
+        field = "pkgver"
+    elif policy in ("stable-tag", "stable-git-tag", "pinned-tag"):
         expected = selected.removeprefix("v")
         actual = assignment(source, "pkgver")
         field = "pkgver"
@@ -61,7 +69,7 @@ def verify(name, config, root=ROOT):
             f"manifest={expected}, recipe={actual}"
         )
 
-    if name in ("ghostty", "yazi", "broot"):
+    if name in ("ghostty", "yazi", "broot", "thunar"):
         pinned = re.findall(
             r"^sha256sums=\('[0-9a-f]{64}'\)$",
             source, re.MULTILINE
@@ -74,6 +82,30 @@ def verify(name, config, root=ROOT):
             raise ValueError(
                 f"{name}: expected one literal pinned SHA-256 checksum"
             )
+
+    if name == "thunar":
+        if (
+            policy != xfce_source.POLICY
+            or config["upstream"] != xfce_source.UPSTREAMS["thunar"]
+            or selected != "thunar-" + actual
+        ):
+            raise ValueError("thunar: unexpected source policy")
+
+        expected_source = (
+            'source=("git+https://gitlab.xfce.org/'
+            'xfce/thunar.git#tag=$pkgname-$pkgver")'
+        )
+
+        declarations = [
+            line for line in source.splitlines()
+            if line.strip().partition("=")[0].strip() == "source"
+        ]
+
+        if (
+            declarations != [expected_source]
+            or assignment(source, "pkgname") != "thunar"
+        ):
+            raise ValueError("thunar: unexpected Git source")
 
     if name == "broot":
         if (

@@ -92,6 +92,15 @@
       "recipe": "arch/broot/PKGBUILD",
       "status": "approved",
       "auto_publish": false
+    },
+    "thunar": {
+      "upstream": "https://gitlab.xfce.org/xfce/thunar.git",
+      "source_ref": "thunar-4.20.10",
+      "release_policy": "stable-xfce-git-tag",
+      "license": "GPL-2.0-or-later AND LGPL-2.1-only",
+      "recipe": "arch/thunar/PKGBUILD",
+      "status": "approved",
+      "auto_publish": false
     }
   }
 }

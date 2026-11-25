@@ -7,6 +7,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import xfce_source
+
 STABLE_TAG = re.compile(
     r"(?:v)?[0-9]+(?:[.][0-9]+){2}(?:[.][0-9]+)?\Z"
 )
@@ -63,7 +65,11 @@ def descendant_of(current, candidate, repo):
 def decide(policy, selected, candidate, *,
            compare=compare_versions, ancestry=None):
     """Return a decision dictionary; never mutate selected state."""
-    if policy in STABLE_POLICIES:
+    if policy == xfce_source.POLICY:
+        old_version = xfce_source.stable_version(selected)
+        new_version = xfce_source.stable_version(candidate)
+        pattern = xfce_source.TAG
+    elif policy in STABLE_POLICIES:
         pattern = STABLE_TAG
     elif policy in COMMIT_POLICIES:
         pattern = COMMIT_SHA
@@ -79,8 +85,13 @@ def decide(policy, selected, candidate, *,
         status, reason = "unchanged", "same-source"
     elif policy.startswith("pinned-"):
         status, reason = "blocked", "pinned"
-    elif policy in ("stable-tag", "stable-git-tag"):
-        comparison = compare(selected, candidate)
+    elif policy in (
+        "stable-tag", "stable-git-tag", xfce_source.POLICY
+    ):
+        if policy == xfce_source.POLICY:
+            comparison = compare(old_version, new_version)
+        else:
+            comparison = compare(selected, candidate)
         if comparison < 0:
             status, reason = "update", "newer-version"
         elif comparison == 0:

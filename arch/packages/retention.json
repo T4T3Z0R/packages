@@ -25,6 +25,8 @@
     "yazi": 2,
     "yazi-debug": 2,
     "broot": 2,
-    "broot-debug": 2
+    "broot-debug": 2,
+    "thunar": 2,
+    "thunar-debug": 2
   }
 }

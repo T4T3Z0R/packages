@@ -9,6 +9,8 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import quote
 
+import xfce_source
+
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = ROOT / "arch/packages/manifest.json"
 
@@ -39,6 +41,20 @@ def discover(name, config, fetch=fetch_json):
     upstream = config["upstream"]
     policy = config["release_policy"]
     selected = config["source_ref"]
+
+    if policy == xfce_source.POLICY:
+        candidate = xfce_source.discover(
+            name, upstream, selected
+        )
+
+        return {
+            "package": name,
+            "upstream": upstream,
+            "policy": policy,
+            "selected": selected,
+            "candidate": candidate,
+            "channel": xfce_source.POLICY,
+        }
 
     if not UPSTREAM.fullmatch(upstream):
         raise ValueError(f"{name}: invalid upstream repository")

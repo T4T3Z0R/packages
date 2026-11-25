@@ -4,6 +4,8 @@ import re
 import sys
 from pathlib import Path
 
+import xfce_source
+
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "arch/packages/manifest.json"
 
@@ -14,7 +16,9 @@ COMMIT_SHA = re.compile(r"[0-9a-f]{40}", re.ASCII)
 
 STABLE_POLICIES = {"stable-tag", "stable-git-tag", "pinned-tag"}
 COMMIT_POLICIES = {"development-commit", "pinned-commit", "reviewed-commit"}
-SUPPORTED_POLICIES = STABLE_POLICIES | COMMIT_POLICIES
+SUPPORTED_POLICIES = (
+    STABLE_POLICIES | COMMIT_POLICIES | {xfce_source.POLICY}
+)
 TRACKED_REF = re.compile(
     r"refs/(?:heads|tags)/[A-Za-z0-9][A-Za-z0-9._/-]*"
 )
@@ -54,11 +58,15 @@ def validate():
             if type(config[field]) is not str or not config[field]:
                 raise ValueError(f"{name}: invalid {field}")
 
-        if not UPSTREAM.fullmatch(config["upstream"]):
-            raise ValueError(f"{name}: invalid upstream repository")
-
         policy = config["release_policy"]
         ref = config["source_ref"]
+
+        if policy == xfce_source.POLICY:
+            xfce_source.validate_source(
+                name, config["upstream"], ref
+            )
+        elif not UPSTREAM.fullmatch(config["upstream"]):
+            raise ValueError(f"{name}: invalid upstream repository")
 
         if policy not in SUPPORTED_POLICIES:
             raise ValueError(f"{name}: unsupported release policy")

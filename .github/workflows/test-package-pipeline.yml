@@ -17,6 +17,7 @@ on:
       - feature/moonlight-qt
       - feature/yazi-package
       - feature/broot-package
+      - feature/thunar-package
     paths:
       - "scripts/package-pipeline/**"
       - "tests/package-pipeline/**"
@@ -35,6 +36,7 @@ on:
       - ".github/workflows/publish-moonlight-qt.yml"
       - ".github/workflows/publish-yazi.yml"
       - ".github/workflows/publish-broot.yml"
+      - ".github/workflows/publish-thunar.yml"
       - ".github/workflows/publish-ghostty.yml"
       - ".github/workflows/publish-keepassxc.yml"
       - ".github/workflows/publish-syncthing.yml"
@@ -48,6 +50,7 @@ on:
       - "arch/moonlight-qt/**"
       - "arch/yazi/**"
       - "arch/broot/**"
+      - "arch/thunar/**"
   pull_request:
     paths:
       - "scripts/package-pipeline/**"
@@ -67,6 +70,7 @@ on:
       - ".github/workflows/publish-moonlight-qt.yml"
       - ".github/workflows/publish-yazi.yml"
       - ".github/workflows/publish-broot.yml"
+      - ".github/workflows/publish-thunar.yml"
       - ".github/workflows/publish-ghostty.yml"
       - ".github/workflows/publish-keepassxc.yml"
       - ".github/workflows/publish-syncthing.yml"
@@ -80,6 +84,7 @@ on:
       - "arch/moonlight-qt/**"
       - "arch/yazi/**"
       - "arch/broot/**"
+      - "arch/thunar/**"
 
 permissions:
   contents: read
@@ -188,7 +193,9 @@ jobs:
           python -m unittest discover -s tests/package-pipeline -p 'test_source_contract.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_yazi_package.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_broot_package.py' -v
-          for package in ghostty keepassxc syncthing wezterm moonlight-qt yazi broot; do
+          python -m unittest discover -s tests/package-pipeline -p 'test_xfce_source.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_thunar_package.py' -v
+          for package in ghostty keepassxc syncthing wezterm moonlight-qt yazi broot thunar; do
             python scripts/package-pipeline/verify_source_contract.py --package "$package"
           done
 
@@ -214,6 +221,7 @@ jobs:
             scripts/package-pipeline/fixed_recipe_selection.py \
             scripts/package-pipeline/verify_source_contract.py \
             scripts/package-pipeline/resolve_candidate.py \
+            scripts/package-pipeline/xfce_source.py \
             "$scratch/input/"
 
           python3 - "$scratch/input" <<'PYTHON'
@@ -232,7 +240,7 @@ jobs:
 
           for package in (
               "ghostty", "keepassxc", "syncthing", "wezterm",
-              "moonlight-qt", "yazi", "broot",
+              "moonlight-qt", "yazi", "broot", "thunar",
           ):
               config = manifest["packages"][package]
               source = Path(config["recipe"]).read_text()
@@ -294,8 +302,27 @@ jobs:
           from fixed_recipe_metadata import (
               archive_checksum,
               keepassxc_checksum,
+              thunar_checksum,
               wezterm_version,
           )
+
+          import xfce_source
+          from resolve_candidate import decide
+
+          for candidate, status in (
+              ("thunar-4.20.11", "update"),
+              ("thunar-4.22.0", "update"),
+              ("thunar-4.20.9", "blocked"),
+              ("thunar-4.20.10", "unchanged"),
+          ):
+              result = decide(
+                  xfce_source.POLICY,
+                  "thunar-4.20.10",
+                  candidate,
+              )
+              assert result["status"] == status, result
+
+          print("PASS: XFCE native version comparison", flush=True)
 
           root = Path(sys.argv[1])
           expected = json.loads(
@@ -322,6 +349,8 @@ jobs:
 
               if package == "keepassxc":
                   actual = keepassxc_checksum(version)
+              elif package == "thunar":
+                  actual = thunar_checksum(version)
               else:
                   actual = archive_checksum(
                       package, version

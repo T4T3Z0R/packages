@@ -1,11 +1,13 @@
 import importlib.util
 import shutil
+import sys
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts/package-pipeline"))
 SCRIPT = ROOT / "scripts/package-pipeline/resolve_candidate.py"
 
 spec = importlib.util.spec_from_file_location(

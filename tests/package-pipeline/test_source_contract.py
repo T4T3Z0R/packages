@@ -1,5 +1,6 @@
 import copy
 import importlib.util
+import sys
 import json
 import re
 import tempfile
@@ -7,6 +8,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts/package-pipeline"))
 SCRIPT = ROOT / "scripts/package-pipeline/verify_source_contract.py"
 
 spec = importlib.util.spec_from_file_location("source_contract", SCRIPT)
