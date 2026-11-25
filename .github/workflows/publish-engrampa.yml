@@ -83,6 +83,7 @@ jobs:
             bash -euo pipefail -c '
               cd "$1"
               makepkg --noconfirm --cleanbuild --nobuild
+              echo "PASS: Native source preparation completed."
 
               parent="src/engrampa"
               submodule="$parent/mate-submodules"
@@ -90,18 +91,50 @@ jobs:
               expected_parent="$(git -C "$parent" rev-parse "refs/tags/v$2^{commit}")"
               actual_parent="$(git -C "$parent" rev-parse HEAD)"
 
-              test "$expected_parent" = "$actual_parent"
+              echo "Expected parent commit: $expected_parent"
+              echo "Actual parent commit:   $actual_parent"
+              test "$expected_parent" = "$actual_parent" || {
+                echo "ERROR: Parent revision mismatch." >&2
+                exit 1
+              }
 
               expected_submodule="$(git -C "$parent" rev-parse HEAD:mate-submodules)"
               actual_submodule="$(git -C "$submodule" rev-parse HEAD)"
 
-              [[ "$expected_submodule" =~ ^[0-9a-f]{40}$ ]]
-              test "$actual_submodule" = "$expected_submodule"
+              echo "Expected submodule commit: $expected_submodule"
+              echo "Actual submodule commit:   $actual_submodule"
+
+              [[ "$expected_submodule" =~ ^[0-9a-f]{40}$ ]] || {
+                echo "ERROR: Invalid expected submodule revision." >&2
+                exit 1
+              }
+              test "$actual_submodule" = "$expected_submodule" || {
+                echo "ERROR: Submodule revision mismatch." >&2
+                exit 1
+              }
 
               entry="$(git -C "$parent" ls-tree HEAD -- mate-submodules)"
-              [[ "$entry" == "160000 commit $expected_submodule""$(printf "\\t")""mate-submodules" ]]
+              printf "Actual Git tree entry: %q\\n" "$entry"
+              [[ "$entry" == "160000 commit $expected_submodule""$(printf "\\t")""mate-submodules" ]] || {
+                echo "ERROR: Invalid parent Git submodule entry." >&2
+                exit 1
+              }
 
-              test -z "$(git -C "$submodule" status --porcelain)"
+              echo "=== SUBMODULE CHECKOUT DIAGNOSTICS ==="
+              git -C "$submodule" rev-parse --show-toplevel
+              git -C "$submodule" status --short
+              git -C "$submodule" diff --stat
+              git -C "$submodule" diff --cached --stat
+
+              submodule_status="$(git -C "$submodule" status --porcelain)"
+
+              if [[ -n "$submodule_status" ]]; then
+                echo "ERROR: Submodule working tree is not clean." >&2
+                echo "$submodule_status" >&2
+                exit 1
+              fi
+
+              echo "PASS: Submodule working tree is clean."
 
               printf "Parent source commit: %s\\n" "$actual_parent"
               printf "Verified submodule commit: %s\\n" "$actual_submodule"
