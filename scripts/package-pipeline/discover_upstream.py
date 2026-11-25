@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import xfce_source
+import mate_source
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = ROOT / "arch/packages/manifest.json"
@@ -56,6 +57,11 @@ def discover(name, config, fetch=fetch_json):
             "channel": xfce_source.POLICY,
         }
 
+    if policy == mate_source.POLICY:
+        mate_source.validate_source(name, upstream, selected)
+    elif name == mate_source.PACKAGE:
+        raise ValueError("Engrampa requires the MATE source policy")
+
     if not UPSTREAM.fullmatch(upstream):
         raise ValueError(f"{name}: invalid upstream repository")
 
@@ -72,7 +78,7 @@ def discover(name, config, fetch=fetch_json):
         if not isinstance(candidate, str) or not STABLE_TAG.fullmatch(candidate):
             raise ValueError(f"{name}: invalid upstream stable tag")
         channel = "stable-release"
-    elif policy == "stable-git-tag":
+    elif policy in ("stable-git-tag", mate_source.POLICY):
         refs = fetch(
             f"{base}/git/matching-refs/tags/v"
         )
@@ -96,7 +102,10 @@ def discover(name, config, fetch=fetch_json):
                 )
 
             tag = ref[len(prefix):]
-            if STABLE_TAG.fullmatch(tag):
+            if policy == mate_source.POLICY:
+                if mate_source.is_stable_tag(tag):
+                    versions.append(tag)
+            elif STABLE_TAG.fullmatch(tag):
                 versions.append(tag)
 
         if not versions:
@@ -115,7 +124,7 @@ def discover(name, config, fetch=fetch_json):
             versions,
             key=lambda tag: (version_key(tag), tag),
         )
-        channel = "stable-git-tag"
+        channel = policy
     elif policy in ("development-commit", "reviewed-commit"):
         tracking = config.get("tracking_ref")
 

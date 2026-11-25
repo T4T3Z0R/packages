@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 import xfce_source
+import mate_source
 
 from fixed_recipe_selection import (
     COMMIT, VERSION, SOURCE_POLICIES, require,
@@ -279,6 +280,50 @@ def mousepad_checksum(version):
     return xfce_checksum("mousepad", version)
 
 
+def engrampa_checksum(version):
+    mate_source.stable_version("v" + version)
+
+    require(
+        os.geteuid() != 0,
+        "Native checksum resolver requires unprivileged user",
+    )
+
+    # Source-only recipe matching the official primary Git
+    # source and checksum algorithm. Do not execute upstream
+    # preparation or build functions.
+    recipe = "\n".join((
+        "pkgname=engrampa",
+        f"pkgver={version}",
+        "pkgrel=1",
+        "arch=('any')",
+        'source=("git+https://github.com/'
+        'mate-desktop/engrampa.git#tag=v$pkgver")',
+        "b2sums=('" + "0" * 128 + "')",
+        "",
+    ))
+
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        (root / "PKGBUILD").write_text(recipe)
+
+        output = run([
+            "makepkg", "--geninteg", "--noconfirm",
+        ], cwd=root)
+
+        matches = re.findall(
+            r"^b2sums=\('([0-9a-f]{128})'\)$",
+            output,
+            re.MULTILINE,
+        )
+
+        require(
+            len(matches) == 1,
+            "Expected exactly one native BLAKE2b checksum",
+        )
+
+        return matches[0]
+
+
 def resolve(package, candidate, config):
     require(
         package in SOURCE_POLICIES,
@@ -321,7 +366,13 @@ def resolve(package, candidate, config):
         result["pkgver"] = wezterm_version(candidate)
         return result
 
-    if package in xfce_source.UPSTREAMS:
+    if package == mate_source.PACKAGE:
+        mate_source.validate_source(
+            package, config["upstream"], config["source_ref"]
+        )
+        version = mate_source.stable_version(candidate)
+        expected = "v" + version
+    elif package in xfce_source.UPSTREAMS:
         xfce_source.validate_source(
             package, config["upstream"], config["source_ref"]
         )
@@ -350,6 +401,8 @@ def resolve(package, candidate, config):
         checksum = thunar_checksum(version)
     elif package == "mousepad":
         checksum = mousepad_checksum(version)
+    elif package == mate_source.PACKAGE:
+        checksum = engrampa_checksum(version)
     else:
         checksum = archive_checksum(package, version)
 

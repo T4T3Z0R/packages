@@ -19,6 +19,7 @@ class WorkflowParityTests(unittest.TestCase):
             "publish-broot.yml",
             "publish-thunar.yml",
             "publish-mousepad.yml",
+            "publish-engrampa.yml",
             "publish-syncthing.yml",
         )
 

@@ -110,6 +110,15 @@
       "recipe": "arch/mousepad/PKGBUILD",
       "status": "approved",
       "auto_publish": false
+    },
+    "engrampa": {
+      "upstream": "mate-desktop/engrampa",
+      "source_ref": "v1.28.5",
+      "release_policy": "stable-mate-git-tag",
+      "license": "GPL-2.0-or-later",
+      "recipe": "arch/engrampa/PKGBUILD",
+      "status": "approved",
+      "auto_publish": false
     }
   }
 }

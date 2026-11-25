@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 import xfce_source
+import mate_source
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "arch/packages/manifest.json"
@@ -44,7 +45,16 @@ def verify(name, config, root=ROOT):
     policy = config["release_policy"]
     selected = config["source_ref"]
 
-    if policy == xfce_source.POLICY:
+    if name == mate_source.PACKAGE and policy != mate_source.POLICY:
+        raise ValueError("Engrampa requires the MATE source policy")
+
+    if policy == mate_source.POLICY:
+        expected = mate_source.validate_source(
+            name, config["upstream"], selected
+        )
+        actual = assignment(source, "pkgver")
+        field = "pkgver"
+    elif policy == xfce_source.POLICY:
         expected = xfce_source.validate_source(
             name, config["upstream"], selected
         )
@@ -68,6 +78,12 @@ def verify(name, config, root=ROOT):
             f"{name}: {field} mismatch: "
             f"manifest={expected}, recipe={actual}"
         )
+
+    if name == mate_source.PACKAGE:
+        if assignment(source, "pkgname") != name:
+            raise ValueError("Engrampa: unexpected package identity")
+
+        mate_source.verify_patch(source, path.parent)
 
     if name in ("ghostty", "yazi", "broot", "thunar", "mousepad"):
         pinned = re.findall(

@@ -19,6 +19,7 @@ on:
       - feature/broot-package
       - feature/thunar-package
       - feature/mousepad-package
+      - feature/engrampa-package
     paths:
       - "scripts/package-pipeline/**"
       - "tests/package-pipeline/**"
@@ -39,6 +40,7 @@ on:
       - ".github/workflows/publish-broot.yml"
       - ".github/workflows/publish-thunar.yml"
       - ".github/workflows/publish-mousepad.yml"
+      - ".github/workflows/publish-engrampa.yml"
       - ".github/workflows/publish-ghostty.yml"
       - ".github/workflows/publish-keepassxc.yml"
       - ".github/workflows/publish-syncthing.yml"
@@ -54,6 +56,7 @@ on:
       - "arch/broot/**"
       - "arch/thunar/**"
       - "arch/mousepad/**"
+      - "arch/engrampa/**"
   pull_request:
     paths:
       - "scripts/package-pipeline/**"
@@ -75,6 +78,7 @@ on:
       - ".github/workflows/publish-broot.yml"
       - ".github/workflows/publish-thunar.yml"
       - ".github/workflows/publish-mousepad.yml"
+      - ".github/workflows/publish-engrampa.yml"
       - ".github/workflows/publish-ghostty.yml"
       - ".github/workflows/publish-keepassxc.yml"
       - ".github/workflows/publish-syncthing.yml"
@@ -90,6 +94,7 @@ on:
       - "arch/broot/**"
       - "arch/thunar/**"
       - "arch/mousepad/**"
+      - "arch/engrampa/**"
 
 permissions:
   contents: read
@@ -201,7 +206,8 @@ jobs:
           python -m unittest discover -s tests/package-pipeline -p 'test_xfce_source.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_thunar_package.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_mousepad_package.py' -v
-          for package in ghostty keepassxc syncthing wezterm moonlight-qt yazi broot thunar mousepad; do
+          python -m unittest discover -s tests/package-pipeline -p 'test_engrampa_package.py' -v
+          for package in ghostty keepassxc syncthing wezterm moonlight-qt yazi broot thunar mousepad engrampa; do
             python scripts/package-pipeline/verify_source_contract.py --package "$package"
           done
 
@@ -228,6 +234,7 @@ jobs:
             scripts/package-pipeline/verify_source_contract.py \
             scripts/package-pipeline/resolve_candidate.py \
             scripts/package-pipeline/xfce_source.py \
+            scripts/package-pipeline/mate_source.py \
             "$scratch/input/"
 
           python3 - "$scratch/input" <<'PYTHON'
@@ -247,6 +254,7 @@ jobs:
           for package in (
               "ghostty", "keepassxc", "syncthing", "wezterm",
               "moonlight-qt", "yazi", "broot", "thunar", "mousepad",
+              "engrampa",
           ):
               config = manifest["packages"][package]
               source = Path(config["recipe"]).read_text()
@@ -265,16 +273,25 @@ jobs:
               }
 
               if package != "wezterm":
-                  algorithm = (
-                      "sha512" if package == "moonlight-qt"
-                      else "sha256"
-                  )
-                  length = 128 if algorithm == "sha512" else 64
-                  digest = re.findall(
-                      rf"^{algorithm}sums=\('([0-9a-f]{{{length}}})'",
-                      source,
-                      re.MULTILINE,
-                  )
+                  if package == "engrampa":
+                      algorithm = "b2"
+                      digest = re.findall(
+                          r"^b2sums=\(\n  ([0-9a-f]{128})\n"
+                          r"  SKIP\n  [0-9a-f]{128}\n\)$",
+                          source,
+                          re.MULTILINE,
+                      )
+                  else:
+                      algorithm = (
+                          "sha512" if package == "moonlight-qt"
+                          else "sha256"
+                      )
+                      length = 128 if algorithm == "sha512" else 64
+                      digest = re.findall(
+                          rf"^{algorithm}sums=\('([0-9a-f]{{{length}}})'",
+                          source,
+                          re.MULTILINE,
+                      )
                   assert len(digest) == 1, package
                   expected[package]["algorithm"] = algorithm
                   expected[package]["checksum"] = digest[0]
@@ -310,10 +327,12 @@ jobs:
               keepassxc_checksum,
               thunar_checksum,
               mousepad_checksum,
+              engrampa_checksum,
               wezterm_version,
           )
 
           import xfce_source
+          import mate_source
           from resolve_candidate import decide
 
           for candidate, status in (
@@ -330,6 +349,21 @@ jobs:
               assert result["status"] == status, result
 
           print("PASS: XFCE native version comparison", flush=True)
+
+          for candidate, status in (
+              ("v1.28.6", "update"),
+              ("v1.30.0", "update"),
+              ("v1.28.4", "blocked"),
+              ("v1.28.5", "unchanged"),
+          ):
+              result = decide(
+                  mate_source.POLICY,
+                  "v1.28.5",
+                  candidate,
+              )
+              assert result["status"] == status, result
+
+          print("PASS: MATE native version comparison", flush=True)
 
           root = Path(sys.argv[1])
           expected = json.loads(
@@ -360,6 +394,8 @@ jobs:
                   actual = thunar_checksum(version)
               elif package == "mousepad":
                   actual = mousepad_checksum(version)
+              elif package == "engrampa":
+                  actual = engrampa_checksum(version)
               else:
                   actual = archive_checksum(
                       package, version

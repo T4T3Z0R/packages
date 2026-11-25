@@ -15,6 +15,7 @@ on:
       - Publish Broot
       - Publish Thunar
       - Publish Mousepad
+      - Publish Engrampa
     types: [completed]
     branches: [main]
   schedule:

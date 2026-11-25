@@ -3,6 +3,7 @@
 import re
 
 import xfce_source
+import mate_source
 
 from verify_source_contract import assignment
 from resolve_candidate import compare_versions
@@ -10,9 +11,13 @@ from resolve_candidate import compare_versions
 FIXED_PACKAGES = frozenset({
     "ghostty", "keepassxc", "syncthing", "wezterm",
     "moonlight-qt", "yazi", "broot", "thunar", "mousepad",
+    "engrampa",
 })
 
 SOURCE_POLICIES = {
+    "engrampa": (
+        mate_source.UPSTREAM, mate_source.POLICY
+    ),
     "thunar": (
         xfce_source.UPSTREAMS["thunar"], xfce_source.POLICY
     ),
@@ -46,6 +51,7 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 SHA512 = re.compile(r"[0-9a-f]{128}")
 
 CHECKSUM_POLICIES = {
+    "engrampa": ("b2", mate_source.B2),
     "ghostty": ("sha256", SHA256),
     "keepassxc": ("sha256", SHA256),
     "syncthing": ("sha256", SHA256),
@@ -245,7 +251,14 @@ def render_recipe(
             "Unexpected stable-source metadata fields",
         )
 
-        if package in xfce_source.UPSTREAMS:
+        if package == mate_source.PACKAGE:
+            selected_version = mate_source.validate_source(
+                package, config["upstream"], selected
+            )
+            candidate_version = mate_source.stable_version(
+                candidate
+            )
+        elif package in xfce_source.UPSTREAMS:
             selected_version = xfce_source.validate_source(
                 package, config["upstream"], selected
             )
@@ -264,11 +277,16 @@ def render_recipe(
             "Stable version does not match selection",
         )
 
-        updated = replace_source_checksum(
-            source,
-            metadata[algorithm],
-            algorithm=algorithm,
-        )
+        if package == mate_source.PACKAGE:
+            updated = mate_source.replace_primary_checksum(
+                source, metadata[algorithm]
+            )
+        else:
+            updated = replace_source_checksum(
+                source,
+                metadata[algorithm],
+                algorithm=algorithm,
+            )
 
     require(
         compare(old_version, version) == -1,

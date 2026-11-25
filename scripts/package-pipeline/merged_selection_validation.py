@@ -96,6 +96,22 @@ MOUSEPAD_BOOTSTRAP_CONFIG = {
 }
 
 
+ENGRAMPA_BOOTSTRAP_BASE = (
+    MOUSEPAD_BOOTSTRAP_BASE | {"mousepad"}
+)
+
+
+ENGRAMPA_BOOTSTRAP_CONFIG = {
+    "upstream": "mate-desktop/engrampa",
+    "source_ref": "v1.28.5",
+    "release_policy": "stable-mate-git-tag",
+    "license": "GPL-2.0-or-later",
+    "recipe": "arch/engrampa/PKGBUILD",
+    "status": "approved",
+    "auto_publish": False,
+}
+
+
 def require(ok, message):
     if not ok:
         raise ValueError(message)
@@ -131,6 +147,22 @@ def changed_source(before, after):
     require(isinstance(old, dict) and isinstance(new, dict),
             "Missing package mapping")
     if set(old) != set(new):
+        # Initial Engrampa registration is not a source approval.
+        if set(old) == ENGRAMPA_BOOTSTRAP_BASE:
+            require(
+                set(new) == ENGRAMPA_BOOTSTRAP_BASE | {"engrampa"},
+                "Unexpected Engrampa registry expansion",
+            )
+            require(
+                all(old[name] == new[name] for name in old),
+                "Existing package modified during Engrampa bootstrap",
+            )
+            require(
+                new["engrampa"] == ENGRAMPA_BOOTSTRAP_CONFIG,
+                "Engrampa bootstrap configuration changed",
+            )
+            return None
+
         # Initial Mousepad registration is not a source approval.
         if set(old) == MOUSEPAD_BOOTSTRAP_BASE:
             require(

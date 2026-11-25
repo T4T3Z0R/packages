@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import xfce_source
+import mate_source
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "arch/packages/manifest.json"
@@ -17,7 +18,8 @@ COMMIT_SHA = re.compile(r"[0-9a-f]{40}", re.ASCII)
 STABLE_POLICIES = {"stable-tag", "stable-git-tag", "pinned-tag"}
 COMMIT_POLICIES = {"development-commit", "pinned-commit", "reviewed-commit"}
 SUPPORTED_POLICIES = (
-    STABLE_POLICIES | COMMIT_POLICIES | {xfce_source.POLICY}
+    STABLE_POLICIES | COMMIT_POLICIES
+    | {xfce_source.POLICY, mate_source.POLICY}
 )
 TRACKED_REF = re.compile(
     r"refs/(?:heads|tags)/[A-Za-z0-9][A-Za-z0-9._/-]*"
@@ -61,7 +63,14 @@ def validate():
         policy = config["release_policy"]
         ref = config["source_ref"]
 
-        if policy == xfce_source.POLICY:
+        if name == mate_source.PACKAGE and policy != mate_source.POLICY:
+            raise ValueError("Engrampa requires the MATE source policy")
+
+        if policy == mate_source.POLICY:
+            mate_source.validate_source(
+                name, config["upstream"], ref
+            )
+        elif policy == xfce_source.POLICY:
             xfce_source.validate_source(
                 name, config["upstream"], ref
             )

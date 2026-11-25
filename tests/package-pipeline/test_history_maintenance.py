@@ -279,6 +279,8 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(packages["thunar-debug"], 2)
         self.assertEqual(packages["mousepad"], 2)
         self.assertEqual(packages["mousepad-debug"], 2)
+        self.assertEqual(packages["engrampa"], 2)
+        self.assertEqual(packages["engrampa-debug"], 2)
         self.assertEqual(packages[PACKAGE], 3)
         self.assertEqual(packages["wezterm-debug"], 2)
 

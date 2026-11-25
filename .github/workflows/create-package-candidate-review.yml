@@ -15,6 +15,7 @@ on:
           - broot
           - thunar
           - mousepad
+          - engrampa
           - yazi
           - noctalia-custom
           - noctalia-greeter-t4t3z0r
@@ -196,7 +197,7 @@ jobs:
           test -n "$PUSHOVER_USER_KEY"
 
           [[ "$ISSUE_NUMBER" =~ ^[1-9][0-9]*$ ]]
-          [[ "$REQUESTED_PACKAGE" =~ ^(broot|gameshell|ghostty|keepassxc|moonlight-qt|mousepad|noctalia-custom|noctalia-greeter-t4t3z0r|syncthing|thunar|wezterm|yazi)$ ]]
+          [[ "$REQUESTED_PACKAGE" =~ ^(broot|engrampa|gameshell|ghostty|keepassxc|moonlight-qt|mousepad|noctalia-custom|noctalia-greeter-t4t3z0r|syncthing|thunar|wezterm|yazi)$ ]]
           [[ "$REQUESTED_CANDIDATE" =~ ^[A-Za-z0-9._+-]{1,100}$ ]]
 
           curl --fail --silent --show-error \
