@@ -6,8 +6,8 @@
       "source_ref": "v26.9.1",
       "release_policy": "stable-tag",
       "license": "MIT",
-      "recipe": "arch/packages/yazi/PKGBUILD.in",
-      "status": "candidate",
+      "recipe": "arch/yazi/PKGBUILD",
+      "status": "approved",
       "auto_publish": false
     },
     "ghostty": {

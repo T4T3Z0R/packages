@@ -21,6 +21,8 @@
     "ghostty-terminfo": 2,
     "ghostty-nautilus": 2,
     "ghostty-debug": 2,
-    "moonlight-qt-debug": 2
+    "moonlight-qt-debug": 2,
+    "yazi": 2,
+    "yazi-debug": 2
   }
 }

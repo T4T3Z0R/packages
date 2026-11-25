@@ -20,7 +20,7 @@ MANIFEST = json.loads(
 
 class SourceContractTests(unittest.TestCase):
     def test_existing_registered_packages(self):
-        for name in ("ghostty", "keepassxc", "syncthing", "wezterm", "moonlight-qt"):
+        for name in ("ghostty", "keepassxc", "syncthing", "wezterm", "moonlight-qt", "yazi"):
             with self.subTest(package=name):
                 config = MANIFEST["packages"][name]
                 result = contract.verify(name, config)

@@ -11,6 +11,7 @@ on:
       - Publish noctalia-greeter
       - Publish Syncthing
       - Publish WezTerm
+      - Publish Yazi
     types: [completed]
     branches: [main]
   schedule:

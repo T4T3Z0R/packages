@@ -61,7 +61,7 @@ def verify(name, config, root=ROOT):
             f"manifest={expected}, recipe={actual}"
         )
 
-    if name == "ghostty":
+    if name in ("ghostty", "yazi"):
         pinned = re.findall(
             r"^sha256sums=\('[0-9a-f]{64}'\)$",
             source, re.MULTILINE
@@ -72,8 +72,33 @@ def verify(name, config, root=ROOT):
         )
         if len(pinned) != 1 or len(declarations) != 1:
             raise ValueError(
-                "ghostty: expected one literal pinned SHA-256 checksum"
+                f"{name}: expected one literal pinned SHA-256 checksum"
             )
+
+    if name == "yazi":
+        if (
+            config["upstream"] != "sxyazi/yazi"
+            or policy != "stable-tag"
+            or selected != "v" + actual
+        ):
+            raise ValueError("yazi: unexpected source policy")
+
+        expected_source = (
+            'source=("$pkgname-$pkgver.tar.gz::'
+            'https://github.com/sxyazi/$pkgname/'
+            'archive/v$pkgver.tar.gz")'
+        )
+
+        declarations = [
+            line for line in source.splitlines()
+            if line.strip().partition("=")[0].strip() == "source"
+        ]
+
+        if (
+            declarations != [expected_source]
+            or assignment(source, "pkgname") != "yazi"
+        ):
+            raise ValueError("yazi: unexpected archive source")
 
     if name == "moonlight-qt":
         if (

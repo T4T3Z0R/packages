@@ -7,10 +7,13 @@ from resolve_candidate import compare_versions
 
 FIXED_PACKAGES = frozenset({
     "ghostty", "keepassxc", "syncthing", "wezterm",
-    "moonlight-qt",
+    "moonlight-qt", "yazi",
 })
 
 SOURCE_POLICIES = {
+    "yazi": (
+        "sxyazi/yazi", "stable-tag"
+    ),
     "moonlight-qt": (
         "moonlight-stream/moonlight-qt", "stable-tag"
     ),
@@ -36,6 +39,7 @@ CHECKSUM_POLICIES = {
     "keepassxc": ("sha256", SHA256),
     "syncthing": ("sha256", SHA256),
     "moonlight-qt": ("sha512", SHA512),
+    "yazi": ("sha256", SHA256),
 }
 COMMIT = re.compile(r"[0-9a-f]{40}")
 VERSION = re.compile(r"[0-9]+(?:[.][0-9]+){2,3}")

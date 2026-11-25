@@ -15,6 +15,7 @@ class WorkflowParityTests(unittest.TestCase):
             "publish-ghostty.yml",
             "publish-keepassxc.yml",
             "publish-moonlight-qt.yml",
+            "publish-yazi.yml",
             "publish-syncthing.yml",
         )
 

@@ -89,6 +89,9 @@ class ManifestTests(unittest.TestCase):
     def test_approved_missing_recipe_rejected(self):
         data = copy.deepcopy(self.original)
         data["packages"]["yazi"]["status"] = "approved"
+        data["packages"]["yazi"]["recipe"] = (
+            "arch/yazi/PKGBUILD.in"
+        )
         self.check(data, False)
 
     def test_approved_existing_recipe(self):
@@ -105,7 +108,7 @@ class ManifestTests(unittest.TestCase):
         self.check(data, True)
 
     def test_registered_packages_have_real_recipes(self):
-        for name in ("ghostty", "keepassxc", "syncthing", "wezterm", "moonlight-qt"):
+        for name in ("ghostty", "keepassxc", "syncthing", "wezterm", "moonlight-qt", "yazi"):
             with self.subTest(package=name):
                 package = self.original["packages"][name]
                 self.assertEqual(package["status"], "approved")

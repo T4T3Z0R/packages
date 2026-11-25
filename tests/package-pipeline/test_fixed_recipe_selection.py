@@ -62,7 +62,7 @@ class FixedRecipeTests(unittest.TestCase):
     def test_all_fixed_recipes(self):
         for package in (
             "ghostty", "keepassxc",
-            "syncthing", "wezterm", "moonlight-qt",
+            "syncthing", "wezterm", "moonlight-qt", "yazi",
         ):
             with self.subTest(package=package):
                 args = self.fixture(package)
