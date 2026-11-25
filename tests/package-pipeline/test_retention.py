@@ -115,8 +115,10 @@ class RetentionPlannerTests(unittest.TestCase):
                 )
                 self.assertTrue(plan["archive_required"])
 
-    def test_yazi_package_retention(self):
-        for package in ("yazi", "yazi-debug"):
+    def test_two_version_package_retention(self):
+        for package in (
+            "yazi", "yazi-debug", "broot", "broot-debug",
+        ):
             with self.subTest(package=package):
                 old = package + "-1.0-1-any.pkg.tar.zst"
                 new = package + "-2.0-1-any.pkg.tar.zst"

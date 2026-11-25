@@ -59,6 +59,7 @@ class HandoffTests(unittest.TestCase):
             ("syncthing", "v2.1.7", "v2.1.8"),
             ("moonlight-qt", "v6.2.0", "v9.9.9"),
             ("yazi", "v26.9.1", "v99.9.9"),
+            ("broot", "v1.62.0", "v99.9.9"),
             ("wezterm", "a" * 40, "b" * 40),
         ):
             with self.subTest(package=package):

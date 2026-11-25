@@ -83,6 +83,15 @@
       "recipe": "arch/moonlight-qt/PKGBUILD",
       "status": "approved",
       "auto_publish": false
+    },
+    "broot": {
+      "upstream": "Canop/broot",
+      "source_ref": "v1.62.0",
+      "release_policy": "stable-git-tag",
+      "license": "MIT",
+      "recipe": "arch/broot/PKGBUILD",
+      "status": "approved",
+      "auto_publish": false
     }
   }
 }

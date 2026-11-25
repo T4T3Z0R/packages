@@ -14,6 +14,9 @@ class PackageContract:
 
 
 CONTRACTS = {
+    "broot": PackageContract(
+        "publish-broot.yml",
+        "Build and validate unsigned Broot", "fixed"),
     "yazi": PackageContract(
         "publish-yazi.yml",
         "Build and validate unsigned Yazi", "fixed"),

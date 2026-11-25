@@ -23,6 +23,8 @@
     "ghostty-debug": 2,
     "moonlight-qt-debug": 2,
     "yazi": 2,
-    "yazi-debug": 2
+    "yazi-debug": 2,
+    "broot": 2,
+    "broot-debug": 2
   }
 }

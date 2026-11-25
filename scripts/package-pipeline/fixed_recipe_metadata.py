@@ -114,6 +114,13 @@ def archive_url(package, version):
             f"syncthing-source-v{version}.tar.gz"
         )
 
+    if package == "broot":
+        return (
+            "https://github.com/Canop/broot"
+            f"/archive/v{version}/"
+            f"broot-v{version}.tar.gz"
+        )
+
     if package == "yazi":
         return (
             "https://github.com/sxyazi/yazi"
