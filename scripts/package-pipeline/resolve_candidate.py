@@ -66,9 +66,10 @@ def decide(policy, selected, candidate, *,
            compare=compare_versions, ancestry=None):
     """Return a decision dictionary; never mutate selected state."""
     if policy == xfce_source.POLICY:
-        old_version = xfce_source.stable_version(selected)
-        new_version = xfce_source.stable_version(candidate)
-        pattern = xfce_source.TAG
+        package = xfce_source.tag_package(selected)
+        old_version = xfce_source.stable_version(selected, package)
+        new_version = xfce_source.stable_version(candidate, package)
+        pattern = xfce_source.tag_pattern(package)
     elif policy in STABLE_POLICIES:
         pattern = STABLE_TAG
     elif policy in COMMIT_POLICIES:

@@ -18,6 +18,7 @@ on:
       - feature/yazi-package
       - feature/broot-package
       - feature/thunar-package
+      - feature/mousepad-package
     paths:
       - "scripts/package-pipeline/**"
       - "tests/package-pipeline/**"
@@ -37,6 +38,7 @@ on:
       - ".github/workflows/publish-yazi.yml"
       - ".github/workflows/publish-broot.yml"
       - ".github/workflows/publish-thunar.yml"
+      - ".github/workflows/publish-mousepad.yml"
       - ".github/workflows/publish-ghostty.yml"
       - ".github/workflows/publish-keepassxc.yml"
       - ".github/workflows/publish-syncthing.yml"
@@ -51,6 +53,7 @@ on:
       - "arch/yazi/**"
       - "arch/broot/**"
       - "arch/thunar/**"
+      - "arch/mousepad/**"
   pull_request:
     paths:
       - "scripts/package-pipeline/**"
@@ -71,6 +74,7 @@ on:
       - ".github/workflows/publish-yazi.yml"
       - ".github/workflows/publish-broot.yml"
       - ".github/workflows/publish-thunar.yml"
+      - ".github/workflows/publish-mousepad.yml"
       - ".github/workflows/publish-ghostty.yml"
       - ".github/workflows/publish-keepassxc.yml"
       - ".github/workflows/publish-syncthing.yml"
@@ -85,6 +89,7 @@ on:
       - "arch/yazi/**"
       - "arch/broot/**"
       - "arch/thunar/**"
+      - "arch/mousepad/**"
 
 permissions:
   contents: read
@@ -195,7 +200,8 @@ jobs:
           python -m unittest discover -s tests/package-pipeline -p 'test_broot_package.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_xfce_source.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_thunar_package.py' -v
-          for package in ghostty keepassxc syncthing wezterm moonlight-qt yazi broot thunar; do
+          python -m unittest discover -s tests/package-pipeline -p 'test_mousepad_package.py' -v
+          for package in ghostty keepassxc syncthing wezterm moonlight-qt yazi broot thunar mousepad; do
             python scripts/package-pipeline/verify_source_contract.py --package "$package"
           done
 
@@ -240,7 +246,7 @@ jobs:
 
           for package in (
               "ghostty", "keepassxc", "syncthing", "wezterm",
-              "moonlight-qt", "yazi", "broot", "thunar",
+              "moonlight-qt", "yazi", "broot", "thunar", "mousepad",
           ):
               config = manifest["packages"][package]
               source = Path(config["recipe"]).read_text()
@@ -303,6 +309,7 @@ jobs:
               archive_checksum,
               keepassxc_checksum,
               thunar_checksum,
+              mousepad_checksum,
               wezterm_version,
           )
 
@@ -351,6 +358,8 @@ jobs:
                   actual = keepassxc_checksum(version)
               elif package == "thunar":
                   actual = thunar_checksum(version)
+              elif package == "mousepad":
+                  actual = mousepad_checksum(version)
               else:
                   actual = archive_checksum(
                       package, version

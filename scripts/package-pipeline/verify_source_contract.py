@@ -69,7 +69,7 @@ def verify(name, config, root=ROOT):
             f"manifest={expected}, recipe={actual}"
         )
 
-    if name in ("ghostty", "yazi", "broot", "thunar"):
+    if name in ("ghostty", "yazi", "broot", "thunar", "mousepad"):
         pinned = re.findall(
             r"^sha256sums=\('[0-9a-f]{64}'\)$",
             source, re.MULTILINE
@@ -83,17 +83,18 @@ def verify(name, config, root=ROOT):
                 f"{name}: expected one literal pinned SHA-256 checksum"
             )
 
-    if name == "thunar":
+    if name in xfce_source.UPSTREAMS:
+        upstream = xfce_source.UPSTREAMS[name]
+
         if (
             policy != xfce_source.POLICY
-            or config["upstream"] != xfce_source.UPSTREAMS["thunar"]
-            or selected != "thunar-" + actual
+            or config["upstream"] != upstream
+            or selected != name + "-" + actual
         ):
-            raise ValueError("thunar: unexpected source policy")
+            raise ValueError(f"{name}: unexpected source policy")
 
         expected_source = (
-            'source=("git+https://gitlab.xfce.org/'
-            'xfce/thunar.git#tag=$pkgname-$pkgver")'
+            f'source=("git+{upstream}#tag=$pkgname-$pkgver")'
         )
 
         declarations = [
@@ -103,9 +104,9 @@ def verify(name, config, root=ROOT):
 
         if (
             declarations != [expected_source]
-            or assignment(source, "pkgname") != "thunar"
+            or assignment(source, "pkgname") != name
         ):
-            raise ValueError("thunar: unexpected Git source")
+            raise ValueError(f"{name}: unexpected Git source")
 
     if name == "broot":
         if (

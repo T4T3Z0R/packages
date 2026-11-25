@@ -14,6 +14,9 @@ class PackageContract:
 
 
 CONTRACTS = {
+    "mousepad": PackageContract(
+        "publish-mousepad.yml",
+        "Build and validate unsigned Mousepad", "fixed"),
     "thunar": PackageContract(
         "publish-thunar.yml",
         "Build and validate unsigned Thunar", "fixed"),

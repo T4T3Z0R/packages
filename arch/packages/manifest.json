@@ -101,6 +101,15 @@
       "recipe": "arch/thunar/PKGBUILD",
       "status": "approved",
       "auto_publish": false
+    },
+    "mousepad": {
+      "upstream": "https://gitlab.xfce.org/apps/mousepad.git",
+      "source_ref": "mousepad-0.7.0",
+      "release_policy": "stable-xfce-git-tag",
+      "license": "GPL-2.0-or-later",
+      "recipe": "arch/mousepad/PKGBUILD",
+      "status": "approved",
+      "auto_publish": false
     }
   }
 }
