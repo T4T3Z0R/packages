@@ -1,0 +1,325 @@
+name: Publish Thunar
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_revision:
+        description: Exact infrastructure commit expected for unsigned validation
+        type: string
+        required: false
+        default: ""
+      publish:
+        description: 'Request protected signing and publication after validation'
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  PACKAGE_NAME: thunar
+  REPO_NAME: t4t3z0r
+  RELEASE_TAG: arch-repo
+  SIGNING_SUBKEY: A2A5AEC28C6D94EF2FB3EC75AC3E97B561D89610
+
+jobs:
+  validate:
+    name: Build and validate unsigned Thunar
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    container:
+      image: archlinux:latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Arch build dependencies
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed \
+            base-devel git python gnupg libarchive \
+            desktop-file-utils libexif hicolor-icon-theme \
+            libnotify pcre2 libgudev exo libxfce4util libxfce4ui \
+            glib2-devel gobject-introspection xfce4-panel xfce4-dev-tools
+
+      - name: Checkout package infrastructure
+        uses: actions/checkout@v6
+
+      - name: Verify requested infrastructure revision
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_revision != '' }}
+        env:
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_REVISION"
+
+      - name: Load verified Thunar source selection
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/verify_source_contract.py --package thunar |
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print("PKGVER="+d["source_value"]); print("PKGREL="+str(d["pkgrel"]))' >> "$GITHUB_ENV"
+
+      - name: Verify pinned Thunar recipe
+        run: |
+          set -euo pipefail
+          bash -n arch/thunar/PKGBUILD
+          grep -Fxq 'pkgname=thunar' arch/thunar/PKGBUILD
+          test -s arch/thunar/LICENSE.packaging
+          test -s arch/thunar/README.packaging.md
+
+      - name: Build as unprivileged user
+        run: |
+          set -euo pipefail
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          runuser -u builder -- \
+            bash -euo pipefail -c '
+              cd "$1"
+              makepkg --noconfirm --cleanbuild
+            ' _ "$GITHUB_WORKSPACE/arch/thunar"
+
+      - name: Inspect candidate and record checksums
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(arch/thunar/*.pkg.tar.zst)
+          (( ${#archives[@]} == 1 || ${#archives[@]} == 2 ))
+          names=(thunar)
+          if [[ -f arch/thunar/thunar-debug-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst ]]; then
+            names+=(thunar-debug)
+          fi
+          (( ${#names[@]} == ${#archives[@]} ))
+
+          mkdir -p candidate evidence
+          : > evidence/package-names.txt
+          for name in "${names[@]}"; do
+            file="${name}-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst"
+            source="arch/thunar/$file"
+            test -s "$source"
+            bsdtar -xOf "$source" .PKGINFO | grep -Fxq "pkgname = $name"
+            cp -- "$source" candidate/
+            printf '%s\n' "$file" >> evidence/package-names.txt
+          done
+          for archive in "${archives[@]}"; do
+            test -f "candidate/${archive##*/}"
+          done
+
+          main=candidate/thunar-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst
+          listing="$(mktemp)"
+          trap 'rm -f "$listing"' EXIT
+          bsdtar -tf "$main" | sed 's#^\./##' > "$listing"
+          for path in \
+            usr/bin/thunar \
+            usr/bin/Thunar \
+            usr/bin/thunar-settings \
+            usr/lib/libthunarx-3.so \
+            usr/lib/libthunarx-3.so.0 \
+            usr/lib/libthunarx-3.so.0.0.0 \
+            usr/lib/pkgconfig/thunarx-3.pc \
+            usr/include/thunarx-3/thunarx/thunarx.h \
+            usr/lib/girepository-1.0/Thunarx-3.0.typelib \
+            usr/lib/thunarx-3/thunar-apr.so \
+            usr/lib/thunarx-3/thunar-sbr.so \
+            usr/lib/thunarx-3/thunar-uca.so \
+            usr/lib/thunarx-3/thunar-wallpaper-plugin.so \
+            usr/lib/xfce4/panel/plugins/libthunar-tpa.so \
+            usr/lib/systemd/user/thunar.service \
+            usr/share/applications/thunar.desktop \
+            usr/share/applications/thunar-settings.desktop \
+            usr/share/applications/thunar-bulk-rename.desktop \
+            usr/share/dbus-1/services/org.xfce.Thunar.service \
+            usr/share/dbus-1/services/org.xfce.FileManager.service \
+            usr/share/dbus-1/services/org.xfce.Thunar.FileManager1.service \
+            usr/share/gtk-doc/html/thunar/index.html \
+            usr/share/gtk-doc/html/thunarx/index.html \
+            usr/share/man/man1/Thunar.1.gz; do
+            grep -Fxq "$path" "$listing"
+          done
+
+          (cd candidate && sha256sum *.pkg.tar.zst > ../evidence/package-SHA256SUMS)
+          (cd candidate && sha256sum --check --strict ../evidence/package-SHA256SUMS)
+          {
+            echo '## Unsigned Thunar candidate'
+            echo
+            echo "- Package count: ${#names[@]}"
+            echo '- Pinned upstream SHA-256 and package build: **verified by makepkg**'
+            echo '- Package identities, executables, extension ABI files and desktop integration: **validated**'
+            echo '- Repository-signed: **NO**'
+            echo '- Published: **NO**'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload unsigned candidate and evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: thunar-${{ github.run_id }}-${{ github.run_attempt }}-candidate
+          path: |
+            candidate/
+            evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+  approval-ready:
+    name: Notify signing approval ready
+    needs: validate
+    if: github.event_name == 'workflow_dispatch' && inputs.publish == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Pushover approval notification
+        env:
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$PUSHOVER_APP_TOKEN"
+          test -n "$PUSHOVER_USER_KEY"
+          curl --fail --silent --show-error \
+            --form-string "token=$PUSHOVER_APP_TOKEN" \
+            --form-string "user=$PUSHOVER_USER_KEY" \
+            --form-string 'title=Package approval required' \
+            --form-string 'message=Thunar package(s) validated; review before signing and publication.' \
+            --form-string "url=https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --form-string 'url_title=Review deployment' \
+            https://api.pushover.net/1/messages.json
+
+  publish:
+    name: Sign and publish approved Thunar package(s)
+    needs: [validate, approval-ready]
+    if: github.event_name == 'workflow_dispatch' && inputs.publish == true
+    runs-on: ubuntu-latest
+    environment:
+      name: arch-repo-publish
+    permissions:
+      contents: write
+    concurrency:
+      group: arch-repo-publish
+      cancel-in-progress: false
+      queue: max
+    container:
+      image: archlinux:latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install publishing dependencies
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed \
+            git github-cli gnupg python libarchive diffutils zstd
+
+      - name: Checkout package infrastructure
+        uses: actions/checkout@v6
+
+      - name: Load verified Thunar source selection
+        run: |
+          set -euo pipefail
+          python3 scripts/package-pipeline/verify_source_contract.py --package thunar |
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print("PKGVER="+d["source_value"]); print("PKGREL="+str(d["pkgrel"]))' >> "$GITHUB_ENV"
+
+      - name: Trust checked-out repository
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Download exact validated candidate
+        uses: actions/download-artifact@v8
+        with:
+          name: thunar-${{ github.run_id }}-${{ github.run_attempt }}-candidate
+          path: validated
+
+      - name: Verify validated candidate
+        run: |
+          set -euo pipefail
+          test -s validated/evidence/package-names.txt
+          test -s validated/evidence/package-SHA256SUMS
+          mapfile -t files < validated/evidence/package-names.txt
+          (( ${#files[@]} == 1 || ${#files[@]} == 2 ))
+          expected=(thunar)
+          if (( ${#files[@]} == 2 )); then expected+=(thunar-debug); fi
+          for i in "${!files[@]}"; do
+            [[ "${files[i]}" == "${expected[i]}-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst" ]]
+          done
+          (cd validated/candidate && sha256sum --check --strict ../evidence/package-SHA256SUMS)
+          mapfile -t actual < <(find validated/candidate -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
+          mapfile -t expected_files < <(printf '%s\n' "${files[@]}" | LC_ALL=C sort)
+          [[ "${actual[*]}" == "${expected_files[*]}" ]]
+          for i in "${!files[@]}"; do
+            bsdtar -xOf "validated/candidate/${files[i]}" .PKGINFO |
+              grep -Fxq "pkgname = ${expected[i]}"
+          done
+          mkdir -p package-output
+          for file in "${files[@]}"; do
+            cp -- "validated/candidate/$file" package-output/
+          done
+          additional="$(printf '%s ' "${files[@]:1}")"
+          {
+            echo "PACKAGE_FILE=${files[0]}"
+            echo "ADDITIONAL_PACKAGE_FILES=${additional% }"
+          } >> "$GITHUB_ENV"
+
+      - name: Refuse existing version collisions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          remote_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+          read -r -a extras <<< "$ADDITIONAL_PACKAGE_FILES"
+          for package in "$PACKAGE_FILE" "${extras[@]}"; do
+            if grep -Fxq "$package" <<< "$remote_assets"; then
+              echo "Package version already exists in rolling release: $package" >&2
+              exit 1
+            fi
+          done
+
+      - name: Import repository signing subkey
+        env:
+          ARCH_REPO_SIGNING_KEY: ${{ secrets.ARCH_REPO_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$ARCH_REPO_SIGNING_KEY"
+          printf '%s\n' "$ARCH_REPO_SIGNING_KEY" | gpg --batch --import
+          gpg --batch --list-secret-keys "$SIGNING_SUBKEY"
+
+      - name: Sign approved packages
+        env:
+          ARCH_REPO_SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_SIGNING_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          read -r -a extras <<< "$ADDITIONAL_PACKAGE_FILES"
+          for name in "$PACKAGE_FILE" "${extras[@]}"; do
+            package="package-output/$name"
+            printf '%s' "$ARCH_REPO_SIGNING_PASSPHRASE" |
+              gpg --batch --yes --pinentry-mode loopback \
+                --passphrase-fd 0 \
+                --local-user "${SIGNING_SUBKEY}!" \
+                --output "${package}.sig" \
+                --detach-sign "$package"
+            gpg --verify "${package}.sig" "$package"
+          done
+
+      - name: Assemble signed repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ARCH_REPO_SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_SIGNING_PASSPHRASE }}
+        run: bash scripts/package-pipeline/assemble-repository.sh
+
+      - name: Publish rolling Arch repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/package-pipeline/publish-repository.sh
+
+      - name: Publication summary
+        run: |
+          {
+            echo '## Published Thunar package(s)'
+            echo
+            echo "- Main package: \`$PACKAGE_FILE\`"
+            echo "- Additional packages: \`$ADDITIONAL_PACKAGE_FILES\`"
+            echo "- Repository: \`$REPO_NAME\`"
+            echo '- Human signing approval: **PASSED**'
+            echo '- Packages and repository databases signed'
+          } >> "$GITHUB_STEP_SUMMARY"

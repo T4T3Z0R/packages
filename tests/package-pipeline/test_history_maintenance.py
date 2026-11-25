@@ -268,13 +268,15 @@ class MaintenanceTests(unittest.TestCase):
     def test_current_policy_contains_all_history_targets(self):
         packages = maintenance.configured_packages()
 
-        self.assertEqual(len(packages), 24)
+        self.assertEqual(len(packages), 26)
         self.assertEqual(packages["moonlight-qt"], 2)
         self.assertEqual(packages["moonlight-qt-debug"], 2)
         self.assertEqual(packages["yazi"], 2)
         self.assertEqual(packages["yazi-debug"], 2)
         self.assertEqual(packages["broot"], 2)
         self.assertEqual(packages["broot-debug"], 2)
+        self.assertEqual(packages["thunar"], 2)
+        self.assertEqual(packages["thunar-debug"], 2)
         self.assertEqual(packages[PACKAGE], 3)
         self.assertEqual(packages["wezterm-debug"], 2)
 

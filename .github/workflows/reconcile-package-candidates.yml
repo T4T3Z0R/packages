@@ -13,6 +13,7 @@ on:
       - Publish WezTerm
       - Publish Yazi
       - Publish Broot
+      - Publish Thunar
     types: [completed]
     branches: [main]
   schedule:

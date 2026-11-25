@@ -206,6 +206,9 @@ case "$PACKAGE_NAME" in
   moonlight-qt)
     optional_companions=(moonlight-qt-debug)
     ;;
+  thunar)
+    optional_companions=(thunar-debug)
+    ;;
   broot)
     optional_companions=(broot-debug)
     ;;

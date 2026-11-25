@@ -7,6 +7,8 @@ import json
 import re
 from pathlib import Path
 
+import xfce_source
+
 from resolve_candidate import (
     COMMIT_POLICIES, COMMIT_SHA,
     STABLE_POLICIES, STABLE_TAG,
@@ -105,7 +107,13 @@ def render(
             "Manifest selected source changed")
 
     policy = config.get("release_policy")
-    if policy in STABLE_POLICIES:
+    if policy == xfce_source.POLICY:
+        xfce_source.validate_source(
+            package, config["upstream"], selected
+        )
+        xfce_source.stable_version(candidate)
+        pattern = xfce_source.TAG
+    elif policy in STABLE_POLICIES:
         pattern = STABLE_TAG
     elif policy in COMMIT_POLICIES:
         pattern = COMMIT_SHA

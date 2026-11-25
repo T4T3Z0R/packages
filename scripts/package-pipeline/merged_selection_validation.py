@@ -65,6 +65,21 @@ BROOT_BOOTSTRAP_CONFIG = {
 }
 
 
+THUNAR_BOOTSTRAP_BASE = (
+    BROOT_BOOTSTRAP_BASE | {"broot"}
+)
+
+THUNAR_BOOTSTRAP_CONFIG = {
+    "upstream": "https://gitlab.xfce.org/xfce/thunar.git",
+    "source_ref": "thunar-4.20.10",
+    "release_policy": "stable-xfce-git-tag",
+    "license": "GPL-2.0-or-later AND LGPL-2.1-only",
+    "recipe": "arch/thunar/PKGBUILD",
+    "status": "approved",
+    "auto_publish": False
+}
+
+
 def require(ok, message):
     if not ok:
         raise ValueError(message)
@@ -100,6 +115,22 @@ def changed_source(before, after):
     require(isinstance(old, dict) and isinstance(new, dict),
             "Missing package mapping")
     if set(old) != set(new):
+        # Initial Thunar registration is not a source approval.
+        if set(old) == THUNAR_BOOTSTRAP_BASE:
+            require(
+                set(new) == THUNAR_BOOTSTRAP_BASE | {"thunar"},
+                "Unexpected Thunar registry expansion",
+            )
+            require(
+                all(old[name] == new[name] for name in old),
+                "Existing package modified during Thunar bootstrap",
+            )
+            require(
+                new["thunar"] == THUNAR_BOOTSTRAP_CONFIG,
+                "Thunar bootstrap configuration changed",
+            )
+            return None
+
         # Initial Broot registration is not a source approval.
         if set(old) == BROOT_BOOTSTRAP_BASE:
             require(
