@@ -797,8 +797,8 @@ class RepositoryIntegrationTests(unittest.TestCase):
         self.assertEqual(
             plan["file"], "yazi-1.0-1-any.pkg.tar.zst"
         )
-        self.assertEqual(plan["previous_versions_to_keep"], 0)
-        self.assertFalse(plan["archive_required"])
+        self.assertEqual(plan["previous_versions_to_keep"], 2)
+        self.assertTrue(plan["archive_required"])
 
     def test_archive_preflight_rejects_wrong_signer(self):
         result = self.assemble()
