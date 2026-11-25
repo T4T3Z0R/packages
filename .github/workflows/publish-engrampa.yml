@@ -126,15 +126,32 @@ jobs:
               git -C "$submodule" diff --stat
               git -C "$submodule" diff --cached --stat
 
-              submodule_status="$(git -C "$submodule" status --porcelain)"
+              # Official autoreconf generates these two files.
+              # Reject tracked changes and all other untracked files.
+              submodule_status="$(git -C "$submodule" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)"
 
-              if [[ -n "$submodule_status" ]]; then
-                echo "ERROR: Submodule working tree is not clean." >&2
-                echo "$submodule_status" >&2
-                exit 1
-              fi
+              while IFS= read -r status; do
+                [[ -n "$status" ]] || continue
 
-              echo "PASS: Submodule working tree is clean."
+                case "$status" in
+                  "?? Makefile.in"|"?? libegg/Makefile.in")
+                    generated="$submodule/${status:3}"
+
+                    if [[ ! -f "$generated" || -L "$generated" ]]; then
+                      echo "ERROR: Invalid generated file: $generated" >&2
+                      exit 1
+                    fi
+
+                    echo "Allowed generated file: $generated"
+                    ;;
+                  *)
+                    echo "ERROR: Unexpected submodule change: $status" >&2
+                    exit 1
+                    ;;
+                esac
+              done <<< "$submodule_status"
+
+              echo "PASS: Submodule contains no unauthorized changes."
 
               printf "Parent source commit: %s\\n" "$actual_parent"
               printf "Verified submodule commit: %s\\n" "$actual_submodule"
