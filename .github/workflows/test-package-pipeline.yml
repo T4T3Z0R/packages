@@ -25,6 +25,7 @@ on:
       - ".github/workflows/review-package-candidate-approval.yml"
       - ".github/workflows/check-package-upstream.yml"
       - ".github/workflows/create-package-candidate-review.yml"
+      - ".github/workflows/reconcile-package-candidates.yml"
       - ".github/workflows/publish-noctalia-greeter.yml"
       - ".github/workflows/publish-noctalia-custom.yml"
       - ".github/workflows/publish-gameshell.yml"
@@ -52,6 +53,7 @@ on:
       - ".github/workflows/review-package-candidate-approval.yml"
       - ".github/workflows/check-package-upstream.yml"
       - ".github/workflows/create-package-candidate-review.yml"
+      - ".github/workflows/reconcile-package-candidates.yml"
       - ".github/workflows/publish-noctalia-greeter.yml"
       - ".github/workflows/publish-noctalia-custom.yml"
       - ".github/workflows/publish-gameshell.yml"
@@ -155,6 +157,8 @@ jobs:
           python -m unittest discover -s tests/package-pipeline -p 'test_release_approval_policy.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_release_approval_dispatch.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_candidate_issue_state.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_reconcile_candidate_publication.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_close_published_candidates.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_github_candidate_issues.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_create_candidate_issue.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_github_candidate_writer.py' -v
