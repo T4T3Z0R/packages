@@ -14,6 +14,9 @@ class PackageContract:
 
 
 CONTRACTS = {
+    "engrampa": PackageContract(
+        "publish-engrampa.yml",
+        "Build and validate unsigned Engrampa", "fixed"),
     "mousepad": PackageContract(
         "publish-mousepad.yml",
         "Build and validate unsigned Mousepad", "fixed"),

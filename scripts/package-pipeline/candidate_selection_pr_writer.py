@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 import xfce_source
+import mate_source
 
 from resolve_candidate import (
     COMMIT_POLICIES, COMMIT_SHA,
@@ -113,6 +114,12 @@ def render(
         )
         xfce_source.stable_version(candidate, package)
         pattern = xfce_source.tag_pattern(package)
+    elif policy == mate_source.POLICY:
+        mate_source.validate_source(
+            package, config["upstream"], selected
+        )
+        mate_source.stable_version(candidate)
+        pattern = mate_source.TAG
     elif policy in STABLE_POLICIES:
         pattern = STABLE_TAG
     elif policy in COMMIT_POLICIES:

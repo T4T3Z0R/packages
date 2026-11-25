@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 import xfce_source
+import mate_source
 
 STABLE_TAG = re.compile(
     r"(?:v)?[0-9]+(?:[.][0-9]+){2}(?:[.][0-9]+)?\Z"
@@ -70,6 +71,10 @@ def decide(policy, selected, candidate, *,
         old_version = xfce_source.stable_version(selected, package)
         new_version = xfce_source.stable_version(candidate, package)
         pattern = xfce_source.tag_pattern(package)
+    elif policy == mate_source.POLICY:
+        old_version = mate_source.stable_version(selected)
+        new_version = mate_source.stable_version(candidate)
+        pattern = mate_source.TAG
     elif policy in STABLE_POLICIES:
         pattern = STABLE_TAG
     elif policy in COMMIT_POLICIES:
@@ -87,9 +92,10 @@ def decide(policy, selected, candidate, *,
     elif policy.startswith("pinned-"):
         status, reason = "blocked", "pinned"
     elif policy in (
-        "stable-tag", "stable-git-tag", xfce_source.POLICY
+        "stable-tag", "stable-git-tag",
+        xfce_source.POLICY, mate_source.POLICY
     ):
-        if policy == xfce_source.POLICY:
+        if policy in (xfce_source.POLICY, mate_source.POLICY):
             comparison = compare(old_version, new_version)
         else:
             comparison = compare(selected, candidate)

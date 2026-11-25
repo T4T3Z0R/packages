@@ -206,6 +206,9 @@ case "$PACKAGE_NAME" in
   moonlight-qt)
     optional_companions=(moonlight-qt-debug)
     ;;
+  engrampa)
+    optional_companions=(engrampa-debug)
+    ;;
   mousepad)
     optional_companions=(mousepad-debug)
     ;;

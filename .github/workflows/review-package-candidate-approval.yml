@@ -217,7 +217,7 @@ jobs:
 
             fixed_pr_ready)
               case "$package" in
-                ghostty|keepassxc|syncthing|wezterm|moonlight-qt|yazi|broot|thunar|mousepad)
+                ghostty|keepassxc|syncthing|wezterm|moonlight-qt|yazi|broot|thunar|mousepad|engrampa)
                   ;;
                 *)
                   echo "Unexpected fixed recipe" >&2
@@ -240,6 +240,7 @@ jobs:
                 scripts/package-pipeline/verify_source_contract.py \
                 scripts/package-pipeline/resolve_candidate.py \
                 scripts/package-pipeline/xfce_source.py \
+                scripts/package-pipeline/mate_source.py \
                 "$scratch/metadata-input/"
 
               install -m 0644 \
@@ -458,7 +459,7 @@ jobs:
           candidate="${BASH_REMATCH[2]}"
 
           case "$package" in
-            broot|gameshell|ghostty|keepassxc|moonlight-qt|mousepad|noctalia-custom|noctalia-greeter-t4t3z0r|syncthing|thunar|wezterm|yazi)
+            broot|engrampa|gameshell|ghostty|keepassxc|moonlight-qt|mousepad|noctalia-custom|noctalia-greeter-t4t3z0r|syncthing|thunar|wezterm|yazi)
               ;;
             *)
               echo 'Unsupported selection package.' >&2

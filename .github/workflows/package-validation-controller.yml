@@ -192,7 +192,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(gh api repos/T4T3Z0R/packages/branches/main --jq .commit.sha)" = "$GITHUB_SHA"
           python3 scripts/package-pipeline/validate_manifest.py
-          for package in ghostty keepassxc syncthing wezterm moonlight-qt yazi broot thunar mousepad; do
+          for package in ghostty keepassxc syncthing wezterm moonlight-qt yazi broot thunar mousepad engrampa; do
             python3 scripts/package-pipeline/verify_source_contract.py \
               --package "$package"
           done
