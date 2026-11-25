@@ -114,6 +114,12 @@ def archive_url(package, version):
             f"syncthing-source-v{version}.tar.gz"
         )
 
+    if package == "yazi":
+        return (
+            "https://github.com/sxyazi/yazi"
+            f"/archive/v{version}.tar.gz"
+        )
+
     if package == "moonlight-qt":
         return (
             "https://github.com/moonlight-stream/moonlight-qt"

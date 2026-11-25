@@ -115,12 +115,40 @@ class RetentionPlannerTests(unittest.TestCase):
                 )
                 self.assertTrue(plan["archive_required"])
 
+    def test_yazi_package_retention(self):
+        for package in ("yazi", "yazi-debug"):
+            with self.subTest(package=package):
+                old = package + "-1.0-1-any.pkg.tar.zst"
+                new = package + "-2.0-1-any.pkg.tar.zst"
+
+                result = self.plan(
+                    [old, old + ".sig"],
+                    package=package,
+                    candidate=new,
+                )
+
+                self.assertEqual(
+                    result.returncode, 0, result.stderr
+                )
+
+                plan = json.loads(result.stdout)
+
+                self.assertEqual(
+                    plan["previous_versions_to_keep"], 2
+                )
+                self.assertEqual(plan["displaced"], old)
+                self.assertEqual(
+                    plan["history_release"],
+                    "arch-history-" + package,
+                )
+                self.assertTrue(plan["archive_required"])
+
     def test_no_retention_policy(self):
-        candidate = "broot-2.0-1-any.pkg.tar.zst"
-        old = "broot-1.0-1-any.pkg.tar.zst"
+        candidate = "retention-test-unregistered-2.0-1-any.pkg.tar.zst"
+        old = "retention-test-unregistered-1.0-1-any.pkg.tar.zst"
         result = self.plan(
             [old, old + ".sig"],
-            package="broot",
+            package="retention-test-unregistered",
             candidate=candidate,
         )
         self.assertEqual(result.returncode, 0, result.stderr)

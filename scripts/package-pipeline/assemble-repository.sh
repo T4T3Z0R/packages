@@ -206,6 +206,9 @@ case "$PACKAGE_NAME" in
   moonlight-qt)
     optional_companions=(moonlight-qt-debug)
     ;;
+  yazi)
+    optional_companions=(yazi-debug)
+    ;;
   syncthing)
     required_companions=(
       syncthing-discosrv

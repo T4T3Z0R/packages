@@ -14,6 +14,9 @@ class PackageContract:
 
 
 CONTRACTS = {
+    "yazi": PackageContract(
+        "publish-yazi.yml",
+        "Build and validate unsigned Yazi", "fixed"),
     "gameshell": PackageContract(
         "publish-gameshell.yml",
         "Validate unsigned candidate", "generated"),

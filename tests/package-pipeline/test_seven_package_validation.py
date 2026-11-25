@@ -22,11 +22,11 @@ class SevenPackageValidation(unittest.TestCase):
             (ROOT / "arch/packages/manifest.json").read_text()
         )
 
-    def test_seven_approved_packages_and_yazi_excluded(self):
+    def test_approved_packages_match_registry(self):
         approved = {n for n, c in self.manifest["packages"].items()
                     if c["status"] == "approved"}
         self.assertEqual(approved, set(selector.SUPPORTED))
-        self.assertNotIn("yazi", approved)
+        self.assertIn("yazi", approved)
 
     def test_generated_recipes_and_workflow_mapping(self):
         for package in GENERATED:
@@ -60,7 +60,7 @@ class SevenPackageValidation(unittest.TestCase):
         with self.assertRaises(ValueError):
             verify(self.manifest, "yazi", "anything")
 
-    def test_real_git_fingerprints_for_seven_packages(self):
+    def test_real_git_fingerprints_for_registered_packages(self):
         revision = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         for package in selector.SUPPORTED:

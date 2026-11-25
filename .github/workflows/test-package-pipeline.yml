@@ -15,6 +15,7 @@ on:
       - feature/unified-release-lifecycle
       - fix/fixed-recipe-source-selection
       - feature/moonlight-qt
+      - feature/yazi-package
     paths:
       - "scripts/package-pipeline/**"
       - "tests/package-pipeline/**"
@@ -31,6 +32,7 @@ on:
       - ".github/workflows/publish-gameshell.yml"
       - ".github/workflows/publish-wezterm.yml"
       - ".github/workflows/publish-moonlight-qt.yml"
+      - ".github/workflows/publish-yazi.yml"
       - ".github/workflows/publish-ghostty.yml"
       - ".github/workflows/publish-keepassxc.yml"
       - ".github/workflows/publish-syncthing.yml"
@@ -42,6 +44,7 @@ on:
       - "arch/syncthing/**"
       - "arch/wezterm/**"
       - "arch/moonlight-qt/**"
+      - "arch/yazi/**"
   pull_request:
     paths:
       - "scripts/package-pipeline/**"
@@ -59,6 +62,7 @@ on:
       - ".github/workflows/publish-gameshell.yml"
       - ".github/workflows/publish-wezterm.yml"
       - ".github/workflows/publish-moonlight-qt.yml"
+      - ".github/workflows/publish-yazi.yml"
       - ".github/workflows/publish-ghostty.yml"
       - ".github/workflows/publish-keepassxc.yml"
       - ".github/workflows/publish-syncthing.yml"
@@ -70,6 +74,7 @@ on:
       - "arch/syncthing/**"
       - "arch/wezterm/**"
       - "arch/moonlight-qt/**"
+      - "arch/yazi/**"
 
 permissions:
   contents: read
@@ -176,7 +181,8 @@ jobs:
           python -m unittest discover -s tests/package-pipeline -p 'test_candidate_notification_io.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_scheduled_candidate_notification_workflow.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_source_contract.py' -v
-          for package in ghostty keepassxc syncthing wezterm moonlight-qt; do
+          python -m unittest discover -s tests/package-pipeline -p 'test_yazi_package.py' -v
+          for package in ghostty keepassxc syncthing wezterm moonlight-qt yazi; do
             python scripts/package-pipeline/verify_source_contract.py --package "$package"
           done
 
@@ -220,7 +226,7 @@ jobs:
 
           for package in (
               "ghostty", "keepassxc", "syncthing", "wezterm",
-              "moonlight-qt",
+              "moonlight-qt", "yazi",
           ):
               config = manifest["packages"][package]
               source = Path(config["recipe"]).read_text()

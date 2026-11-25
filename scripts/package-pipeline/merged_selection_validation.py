@@ -46,6 +46,10 @@ MOONLIGHT_BOOTSTRAP_CONFIG = {
 }
 
 
+YAZI_BOOTSTRAP_ORIGINAL = {'upstream': 'sxyazi/yazi', 'source_ref': 'v26.9.1', 'release_policy': 'stable-tag', 'license': 'MIT', 'recipe': 'arch/packages/yazi/PKGBUILD.in', 'status': 'candidate', 'auto_publish': False}
+
+YAZI_BOOTSTRAP_APPROVED = {'upstream': 'sxyazi/yazi', 'source_ref': 'v26.9.1', 'release_policy': 'stable-tag', 'license': 'MIT', 'recipe': 'arch/yazi/PKGBUILD', 'status': 'approved', 'auto_publish': False}
+
 def require(ok, message):
     if not ok:
         raise ValueError(message)
@@ -109,6 +113,19 @@ def changed_source(before, after):
                     in BOOTSTRAP_PACKAGES.items()),
                 "Bootstrap package configuration changed")
         return None
+    # Initial Yazi registration approval is not a source update.
+    # Only the exact original registration may be promoted.
+    if (
+        old.get("yazi") == YAZI_BOOTSTRAP_ORIGINAL
+        and new.get("yazi") == YAZI_BOOTSTRAP_APPROVED
+    ):
+        require(
+            all(old[name] == new[name]
+                for name in old if name != "yazi"),
+            "Existing package modified during Yazi bootstrap",
+        )
+        return None
+
     differences = []
     for package in new:
         a, b = old[package], new[package]
