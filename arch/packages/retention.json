@@ -27,6 +27,8 @@
     "broot": 2,
     "broot-debug": 2,
     "thunar": 2,
-    "thunar-debug": 2
+    "thunar-debug": 2,
+    "mousepad": 2,
+    "mousepad-debug": 2
   }
 }

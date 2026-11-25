@@ -80,6 +80,22 @@ THUNAR_BOOTSTRAP_CONFIG = {
 }
 
 
+MOUSEPAD_BOOTSTRAP_BASE = (
+    THUNAR_BOOTSTRAP_BASE | {"thunar"}
+)
+
+
+MOUSEPAD_BOOTSTRAP_CONFIG = {
+    "upstream": "https://gitlab.xfce.org/apps/mousepad.git",
+    "source_ref": "mousepad-0.7.0",
+    "release_policy": "stable-xfce-git-tag",
+    "license": "GPL-2.0-or-later",
+    "recipe": "arch/mousepad/PKGBUILD",
+    "status": "approved",
+    "auto_publish": False,
+}
+
+
 def require(ok, message):
     if not ok:
         raise ValueError(message)
@@ -115,6 +131,22 @@ def changed_source(before, after):
     require(isinstance(old, dict) and isinstance(new, dict),
             "Missing package mapping")
     if set(old) != set(new):
+        # Initial Mousepad registration is not a source approval.
+        if set(old) == MOUSEPAD_BOOTSTRAP_BASE:
+            require(
+                set(new) == MOUSEPAD_BOOTSTRAP_BASE | {"mousepad"},
+                "Unexpected Mousepad registry expansion",
+            )
+            require(
+                all(old[name] == new[name] for name in old),
+                "Existing package modified during Mousepad bootstrap",
+            )
+            require(
+                new["mousepad"] == MOUSEPAD_BOOTSTRAP_CONFIG,
+                "Mousepad bootstrap configuration changed",
+            )
+            return None
+
         # Initial Thunar registration is not a source approval.
         if set(old) == THUNAR_BOOTSTRAP_BASE:
             require(

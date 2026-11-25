@@ -14,6 +14,7 @@ on:
       - Publish Yazi
       - Publish Broot
       - Publish Thunar
+      - Publish Mousepad
     types: [completed]
     branches: [main]
   schedule:

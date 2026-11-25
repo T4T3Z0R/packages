@@ -233,12 +233,14 @@ def keepassxc_checksum(version):
         return parse_native_checksum(output)
 
 
-def thunar_checksum(version):
-    tag = "thunar-" + version
+def xfce_checksum(package, version):
+    if package not in xfce_source.UPSTREAMS:
+        raise ValueError("Unsupported XFCE package")
 
-    xfce_source.validate_source(
-        "thunar", xfce_source.UPSTREAMS["thunar"], tag
-    )
+    upstream = xfce_source.UPSTREAMS[package]
+    tag = package + "-" + version
+
+    xfce_source.validate_source(package, upstream, tag)
 
     require(
         os.geteuid() != 0,
@@ -248,12 +250,11 @@ def thunar_checksum(version):
     # Source-only recipe. Preserve the official Git source
     # declaration without executing upstream build code.
     recipe = "\n".join((
-        "pkgname=thunar",
+        f"pkgname={package}",
         f"pkgver={version}",
         "pkgrel=1",
         "arch=('any')",
-        'source=("git+https://gitlab.xfce.org/'
-        'xfce/thunar.git#tag=$pkgname-$pkgver")',
+        f'source=("git+{upstream}#tag=$pkgname-$pkgver")',
         "sha256sums=('"
         + "0" * 64 + "')",
         "",
@@ -268,6 +269,14 @@ def thunar_checksum(version):
         ], cwd=root)
 
         return parse_native_checksum(output)
+
+
+def thunar_checksum(version):
+    return xfce_checksum("thunar", version)
+
+
+def mousepad_checksum(version):
+    return xfce_checksum("mousepad", version)
 
 
 def resolve(package, candidate, config):
@@ -312,12 +321,12 @@ def resolve(package, candidate, config):
         result["pkgver"] = wezterm_version(candidate)
         return result
 
-    if package == "thunar":
+    if package in xfce_source.UPSTREAMS:
         xfce_source.validate_source(
             package, config["upstream"], config["source_ref"]
         )
-        version = xfce_source.stable_version(candidate)
-        expected = "thunar-" + version
+        version = xfce_source.stable_version(candidate, package)
+        expected = package + "-" + version
     else:
         version = candidate.removeprefix("v")
         expected = (
@@ -339,6 +348,8 @@ def resolve(package, candidate, config):
         checksum = keepassxc_checksum(version)
     elif package == "thunar":
         checksum = thunar_checksum(version)
+    elif package == "mousepad":
+        checksum = mousepad_checksum(version)
     else:
         checksum = archive_checksum(package, version)
 

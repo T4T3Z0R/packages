@@ -29,6 +29,7 @@ class SevenPackageValidation(unittest.TestCase):
         self.assertIn("yazi", approved)
         self.assertIn("broot", approved)
         self.assertIn("thunar", approved)
+        self.assertIn("mousepad", approved)
 
     def test_generated_recipes_and_workflow_mapping(self):
         for package in GENERATED:

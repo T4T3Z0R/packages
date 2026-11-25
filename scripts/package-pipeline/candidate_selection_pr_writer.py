@@ -111,8 +111,8 @@ def render(
         xfce_source.validate_source(
             package, config["upstream"], selected
         )
-        xfce_source.stable_version(candidate)
-        pattern = xfce_source.TAG
+        xfce_source.stable_version(candidate, package)
+        pattern = xfce_source.tag_pattern(package)
     elif policy in STABLE_POLICIES:
         pattern = STABLE_TAG
     elif policy in COMMIT_POLICIES:
