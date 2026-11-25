@@ -344,7 +344,7 @@ class WorkflowParityTests(unittest.TestCase):
                         for line in publishing
                     ))
 
-    def test_only_unified_upstream_discovery_is_scheduled(self):
+    def test_only_approved_housekeeping_workflows_are_scheduled(self):
         workflows = ROOT / ".github/workflows"
         self.assertFalse((
             workflows / "check-noctalia-greeter.yml"
@@ -353,7 +353,44 @@ class WorkflowParityTests(unittest.TestCase):
             p.name for p in workflows.glob("*.yml")
             if "\n  schedule:\n" in p.read_text()
         )
-        self.assertEqual(scheduled, ["check-package-upstream.yml"])
+        self.assertEqual(scheduled, [
+            "check-package-upstream.yml",
+            "reconcile-package-candidates.yml",
+        ])
+
+        reconciliation = (
+            workflows / "reconcile-package-candidates.yml"
+        ).read_text()
+
+        self.assertIn("workflow_run:", reconciliation)
+        self.assertIn("types: [completed]", reconciliation)
+        self.assertIn("workflow_dispatch:", reconciliation)
+        self.assertIn("issues: write", reconciliation)
+        self.assertIn(
+            "close_published_candidates.py", reconciliation
+        )
+        self.assertIn(
+            "group: package-candidate-issue-writes",
+            reconciliation,
+        )
+        self.assertIn(
+            "persist-credentials: false", reconciliation
+        )
+
+        for forbidden in (
+            "contents: write",
+            "actions: write",
+            "pull-requests: write",
+            "environment:",
+            "gh workflow run",
+            "gh release upload",
+            "gh release delete-asset",
+            "ARCH_REPO_SIGNING",
+            "publish-repository.sh",
+            "assemble-repository.sh",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, reconciliation)
         discovery = (
             workflows / "check-package-upstream.yml"
         ).read_text()
