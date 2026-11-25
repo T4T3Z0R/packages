@@ -17,7 +17,7 @@ TEMPLATES = {
     'noctalia-greeter-t4t3z0r': ('publish-noctalia-greeter.yml',
                 {'publish': False, 'source_tag': MANIFEST['packages']['noctalia-greeter-t4t3z0r']['source_ref']}),
 }
-FIXED = ('ghostty', 'keepassxc', 'syncthing', 'wezterm', 'moonlight-qt', 'yazi')
+FIXED = ('ghostty', 'keepassxc', 'syncthing', 'wezterm', 'moonlight-qt', 'yazi', 'broot')
 
 
 def approved_plan(package, inputs, workflow):

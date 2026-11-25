@@ -16,6 +16,7 @@ on:
       - fix/fixed-recipe-source-selection
       - feature/moonlight-qt
       - feature/yazi-package
+      - feature/broot-package
     paths:
       - "scripts/package-pipeline/**"
       - "tests/package-pipeline/**"
@@ -33,6 +34,7 @@ on:
       - ".github/workflows/publish-wezterm.yml"
       - ".github/workflows/publish-moonlight-qt.yml"
       - ".github/workflows/publish-yazi.yml"
+      - ".github/workflows/publish-broot.yml"
       - ".github/workflows/publish-ghostty.yml"
       - ".github/workflows/publish-keepassxc.yml"
       - ".github/workflows/publish-syncthing.yml"
@@ -45,6 +47,7 @@ on:
       - "arch/wezterm/**"
       - "arch/moonlight-qt/**"
       - "arch/yazi/**"
+      - "arch/broot/**"
   pull_request:
     paths:
       - "scripts/package-pipeline/**"
@@ -63,6 +66,7 @@ on:
       - ".github/workflows/publish-wezterm.yml"
       - ".github/workflows/publish-moonlight-qt.yml"
       - ".github/workflows/publish-yazi.yml"
+      - ".github/workflows/publish-broot.yml"
       - ".github/workflows/publish-ghostty.yml"
       - ".github/workflows/publish-keepassxc.yml"
       - ".github/workflows/publish-syncthing.yml"
@@ -75,6 +79,7 @@ on:
       - "arch/wezterm/**"
       - "arch/moonlight-qt/**"
       - "arch/yazi/**"
+      - "arch/broot/**"
 
 permissions:
   contents: read
@@ -182,7 +187,8 @@ jobs:
           python -m unittest discover -s tests/package-pipeline -p 'test_scheduled_candidate_notification_workflow.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_source_contract.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_yazi_package.py' -v
-          for package in ghostty keepassxc syncthing wezterm moonlight-qt yazi; do
+          python -m unittest discover -s tests/package-pipeline -p 'test_broot_package.py' -v
+          for package in ghostty keepassxc syncthing wezterm moonlight-qt yazi broot; do
             python scripts/package-pipeline/verify_source_contract.py --package "$package"
           done
 
@@ -226,7 +232,7 @@ jobs:
 
           for package in (
               "ghostty", "keepassxc", "syncthing", "wezterm",
-              "moonlight-qt", "yazi",
+              "moonlight-qt", "yazi", "broot",
           ):
               config = manifest["packages"][package]
               source = Path(config["recipe"]).read_text()

@@ -50,6 +50,21 @@ YAZI_BOOTSTRAP_ORIGINAL = {'upstream': 'sxyazi/yazi', 'source_ref': 'v26.9.1', '
 
 YAZI_BOOTSTRAP_APPROVED = {'upstream': 'sxyazi/yazi', 'source_ref': 'v26.9.1', 'release_policy': 'stable-tag', 'license': 'MIT', 'recipe': 'arch/yazi/PKGBUILD', 'status': 'approved', 'auto_publish': False}
 
+BROOT_BOOTSTRAP_BASE = (
+    MOONLIGHT_BOOTSTRAP_BASE | {"moonlight-qt"}
+)
+
+BROOT_BOOTSTRAP_CONFIG = {
+    "upstream": "Canop/broot",
+    "source_ref": "v1.62.0",
+    "release_policy": "stable-git-tag",
+    "license": "MIT",
+    "recipe": "arch/broot/PKGBUILD",
+    "status": "approved",
+    "auto_publish": False,
+}
+
+
 def require(ok, message):
     if not ok:
         raise ValueError(message)
@@ -85,6 +100,22 @@ def changed_source(before, after):
     require(isinstance(old, dict) and isinstance(new, dict),
             "Missing package mapping")
     if set(old) != set(new):
+        # Initial Broot registration is not a source approval.
+        if set(old) == BROOT_BOOTSTRAP_BASE:
+            require(
+                set(new) == BROOT_BOOTSTRAP_BASE | {"broot"},
+                "Unexpected Broot registry expansion",
+            )
+            require(
+                all(old[name] == new[name] for name in old),
+                "Existing package modified during Broot bootstrap",
+            )
+            require(
+                new["broot"] == BROOT_BOOTSTRAP_CONFIG,
+                "Broot bootstrap configuration changed",
+            )
+            return None
+
         # Initial Moonlight registration is not a source approval.
         if set(old) == MOONLIGHT_BOOTSTRAP_BASE:
             require(

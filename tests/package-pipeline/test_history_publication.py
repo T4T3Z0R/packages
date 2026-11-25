@@ -535,7 +535,7 @@ class HistoryMetadataTests(unittest.TestCase):
 
     def test_combined_zero_retention_rejected(self):
         with self.assertRaisesRegex(ValueError, "positive"):
-            self.verified_plan(package="broot")
+            self.verified_plan(package="retention-test-unregistered")
 
         self.assertEqual(self.operations, [])
 

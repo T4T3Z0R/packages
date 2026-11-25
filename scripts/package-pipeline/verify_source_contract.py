@@ -61,7 +61,7 @@ def verify(name, config, root=ROOT):
             f"manifest={expected}, recipe={actual}"
         )
 
-    if name in ("ghostty", "yazi"):
+    if name in ("ghostty", "yazi", "broot"):
         pinned = re.findall(
             r"^sha256sums=\('[0-9a-f]{64}'\)$",
             source, re.MULTILINE
@@ -74,6 +74,30 @@ def verify(name, config, root=ROOT):
             raise ValueError(
                 f"{name}: expected one literal pinned SHA-256 checksum"
             )
+
+    if name == "broot":
+        if (
+            config["upstream"] != "Canop/broot"
+            or policy != "stable-git-tag"
+            or selected != "v" + actual
+        ):
+            raise ValueError("broot: unexpected source policy")
+
+        expected_source = (
+            'source=("https://github.com/Canop/broot/'
+            'archive/v$pkgver/$pkgname-v$pkgver.tar.gz")'
+        )
+
+        declarations = [
+            line for line in source.splitlines()
+            if line.strip().partition("=")[0].strip() == "source"
+        ]
+
+        if (
+            declarations != [expected_source]
+            or assignment(source, "pkgname") != "broot"
+        ):
+            raise ValueError("broot: unexpected archive source")
 
     if name == "yazi":
         if (

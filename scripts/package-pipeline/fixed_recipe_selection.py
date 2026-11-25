@@ -7,10 +7,13 @@ from resolve_candidate import compare_versions
 
 FIXED_PACKAGES = frozenset({
     "ghostty", "keepassxc", "syncthing", "wezterm",
-    "moonlight-qt", "yazi",
+    "moonlight-qt", "yazi", "broot",
 })
 
 SOURCE_POLICIES = {
+    "broot": (
+        "Canop/broot", "stable-git-tag"
+    ),
     "yazi": (
         "sxyazi/yazi", "stable-tag"
     ),
@@ -40,6 +43,7 @@ CHECKSUM_POLICIES = {
     "syncthing": ("sha256", SHA256),
     "moonlight-qt": ("sha512", SHA512),
     "yazi": ("sha256", SHA256),
+    "broot": ("sha256", SHA256),
 }
 COMMIT = re.compile(r"[0-9a-f]{40}")
 VERSION = re.compile(r"[0-9]+(?:[.][0-9]+){2,3}")

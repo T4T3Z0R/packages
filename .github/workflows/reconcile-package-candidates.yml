@@ -12,6 +12,7 @@ on:
       - Publish Syncthing
       - Publish WezTerm
       - Publish Yazi
+      - Publish Broot
     types: [completed]
     branches: [main]
   schedule:
