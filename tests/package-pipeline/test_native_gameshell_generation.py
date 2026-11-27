@@ -431,8 +431,14 @@ chmod 755 "$output.sh"
         # root-owned checkout contents under host-owned parents.
         revision = self.fixture()
 
-        host_uid = 1001
-        host_gid = 1001
+        # Use an existing non-root identity so automatic
+        # useradd allocation cannot collide with the fixture owner.
+        host_account = pwd.getpwnam("nobody")
+        host_uid = host_account.pw_uid
+        host_gid = host_account.pw_gid
+
+        self.assertNotEqual(host_uid, 0)
+        self.assertNotEqual(host_gid, 0)
 
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
