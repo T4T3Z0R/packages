@@ -120,7 +120,7 @@ jobs:
           test "$GITHUB_SHA" = "$EXPECTED_REVISION"
 
       - name: Install test dependencies
-        run: pacman -Syu --noconfirm --needed python bash git gnupg libarchive zstd diffutils jq
+        run: pacman -Syu --noconfirm --needed python bash git gnupg libarchive zstd diffutils jq base-devel gawk gettext
 
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -180,6 +180,8 @@ jobs:
           python -m unittest discover -s tests/package-pipeline -p 'test_generated_recipe_metadata.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_generated_recipe_workflows.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_native_dependency_metadata.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_build_workspace_boundary.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_gameshell_archive_intake.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_merged_selection_validation.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_dispatch_unsigned_validation.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_release_approval_policy.py' -v
@@ -421,6 +423,16 @@ jobs:
         env:
           PACKAGE_PIPELINE_NATIVE_TESTS: "1"
         run: python -m unittest discover -s tests/package-pipeline -p 'test_native_dependency_workflows.py' -v
+
+      - name: Verify native build privilege boundaries
+        env:
+          PACKAGE_PIPELINE_NATIVE_TESTS: "1"
+        run: python -m unittest discover -s tests/package-pipeline -p 'test_native_build_boundaries.py' -v
+
+      - name: Verify native GameShell generation and packaging
+        env:
+          PACKAGE_PIPELINE_NATIVE_TESTS: "1"
+        run: python -m unittest discover -s tests/package-pipeline -p 'test_native_gameshell_generation.py' -v
 
       - name: Run real-package integration tests
         run: python -m unittest discover -s tests/package-pipeline -p "test_integration.py" -v

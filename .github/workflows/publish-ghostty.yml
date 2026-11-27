@@ -77,16 +77,47 @@ jobs:
         run: |
           set -euo pipefail
           useradd --create-home builder
-          chown -R builder:builder "$GITHUB_WORKSPACE"
+          # Keep pipeline infrastructure outside the writable build tree.
+          test "$(id -u builder)" -ne 0
+          test -d "$GITHUB_WORKSPACE"
+          test ! -L "$GITHUB_WORKSPACE"
+          test ! -L build
+          mkdir -p build
+          test "$(stat -c '%u' build)" = "$(id -u)"
+          test ! -e build/ghostty
+          test ! -L build/ghostty
+          cp -a -- arch/ghostty build/ghostty
+          chown -R builder:builder build/ghostty
+
+          python3 -I scripts/package-pipeline/build_workspace_boundary.py \
+            --user builder \
+            --workspace "$GITHUB_WORKSPACE" \
+            --writable build/ghostty
+
+          # Verify actual access under the build account.
+          runuser -u builder -- \
+            bash -e -c '
+              test "$(id -u)" -ne 0
+              for protected in "$1" "$1/arch" "$1/.git" \
+                "$1/.github" "$1/scripts" "$1/build" "$2"
+              do
+                test -e "$protected"
+                test ! -w "$protected"
+              done
+              test -w "$3"
+              test -w "$3/PKGBUILD"
+            ' _ "$GITHUB_WORKSPACE" \
+              "$GITHUB_WORKSPACE/arch/ghostty" \
+              "$GITHUB_WORKSPACE/build/ghostty"
           runuser -u builder -- \
             bash -c 'cd "$1" && makepkg --noconfirm --cleanbuild --nocheck' \
-            _ "$GITHUB_WORKSPACE/arch/ghostty"
+            _ "$GITHUB_WORKSPACE/build/ghostty"
 
       - name: Inspect split packages and record checksums
         run: |
           set -euo pipefail
           shopt -s nullglob
-          archives=(arch/ghostty/*.pkg.tar.zst)
+          archives=(build/ghostty/*.pkg.tar.zst)
           # makepkg may produce ghostty-debug depending on Arch's makepkg.conf.
           (( ${#archives[@]} == 4 || ${#archives[@]} == 5 )) || {
             echo "Expected four split packages and optionally ghostty-debug" >&2
@@ -94,7 +125,7 @@ jobs:
           }
 
           names=(ghostty ghostty-shell-integration ghostty-terminfo ghostty-nautilus)
-          if [[ -f arch/ghostty/ghostty-debug-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst ]]; then
+          if [[ -f build/ghostty/ghostty-debug-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst ]]; then
             names+=(ghostty-debug)
           fi
           (( ${#names[@]} == ${#archives[@]} ))
@@ -103,7 +134,7 @@ jobs:
           : > evidence/package-names.txt
           for name in "${names[@]}"; do
             file="${name}-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst"
-            source="arch/ghostty/$file"
+            source="build/ghostty/$file"
             test -s "$source"
             bsdtar -xOf "$source" .PKGINFO | grep -Fxq "pkgname = $name"
             cp -- "$source" candidate/

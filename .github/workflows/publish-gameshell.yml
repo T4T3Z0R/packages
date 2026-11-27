@@ -273,14 +273,31 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p build/gameshell evidence
+          # Establish protected parents before running upstream code.
+          test "$(id -u)" -eq 0
+          test "$(git -C source/GameShell rev-parse HEAD)" = "$SOURCE_SHA"
 
-          (
-            cd source/GameShell
-            ./utils/gameshell_archive.sh \
-              -N "$GITHUB_WORKSPACE/build/gameshell/gameshell"
-          )
+          useradd -m builduser
+          test "$(id -u builduser)" -ne 0
 
+          mkdir -m 0755 build candidate evidence
+          mkdir -m 0755 build/gameshell build/gameshell-generation
+
+          for protected in \
+            "$GITHUB_WORKSPACE" \
+            "$GITHUB_WORKSPACE/source" \
+            "$GITHUB_WORKSPACE/source/GameShell" \
+            "$GITHUB_WORKSPACE/build" \
+            "$GITHUB_WORKSPACE/build/gameshell" \
+            "$GITHUB_WORKSPACE/candidate" \
+            "$GITHUB_WORKSPACE/evidence"
+          do
+            test -d "$protected"
+            test ! -L "$protected"
+            test "$(stat -c '%u' "$protected")" = "$(id -u)"
+          done
+
+          # Obtain trusted packaging inputs before upstream execution.
           cp source/GameShell/LICENSE build/gameshell/LICENSE
           cp arch/gameshell/gameshell-launcher \
             build/gameshell/gameshell-launcher
@@ -292,6 +309,83 @@ jobs:
             --prefix=GameShell-source/ \
             "$SOURCE_SHA" \
             > build/gameshell/GameShell-source.tar.gz
+
+          tar -tzf build/gameshell/GameShell-source.tar.gz \
+            > evidence/source-archive-files.txt
+
+          for required in \
+            GameShell-source/LICENSE \
+            GameShell-source/start.sh \
+            GameShell-source/lib/profile.sh \
+            GameShell-source/utils/gameshell_archive.sh
+          do
+            grep -Fxq "$required" evidence/source-archive-files.txt
+          done
+
+          # Preserve Git history without copying checkout configuration.
+          git clone --no-local --no-checkout --template= \
+            "$GITHUB_WORKSPACE/source/GameShell" \
+            build/gameshell-generation/GameShell
+
+          chown -R builduser:builduser build/gameshell-generation
+
+          python3 -I scripts/package-pipeline/build_workspace_boundary.py \
+            --user builduser \
+            --workspace "$GITHUB_WORKSPACE" \
+            --writable build/gameshell-generation
+
+          runuser -u builduser -- \
+            env -i \
+            HOME=/home/builduser \
+            USER=builduser \
+            LOGNAME=builduser \
+            PATH=/usr/bin:/bin \
+            LANG=C.UTF-8 \
+            bash -euo pipefail -c '
+              test "$(id -u)" -ne 0
+
+              for protected in \
+                "$1" "$1/.git" "$1/.github" \
+                "$1/arch" "$1/scripts" "$1/source" \
+                "$1/source/GameShell" "$1/build" \
+                "$1/build/gameshell" "$1/candidate" "$1/evidence"
+              do
+                test -d "$protected"
+                test ! -w "$protected"
+              done
+
+              test ! -w "$1/arch/gameshell/PKGBUILD.in"
+              test ! -w "$1/scripts/package-pipeline/gameshell_archive_intake.py"
+
+              test -w "$2"
+              test -w "$2/GameShell"
+
+              cd "$2/GameShell"
+              git checkout --detach "$3"
+              test "$(git rev-parse HEAD)" = "$3"
+              test -z "$(git status --porcelain)"
+
+              # Preserve normal upstream version calculation.
+              test "$(git describe --always --dirty)" = "$4"
+
+              printf "GameShell archive generation UID: %s\n" "$(id -u)"
+              ./utils/gameshell_archive.sh -z \
+                -N "$2/gameshell"
+            ' _ "$GITHUB_WORKSPACE" \
+              "$GITHUB_WORKSPACE/build/gameshell-generation" \
+              "$SOURCE_SHA" \
+              "$(git -C source/GameShell describe --always --dirty)"
+
+          # Intake validates generated files without executing them.
+          python3 scripts/package-pipeline/gameshell_archive_intake.py \
+            --generated build/gameshell-generation \
+            --destination build/gameshell \
+            --evidence evidence
+
+          (
+            cd evidence
+            sha256sum --check --strict game-payload-SHA256SUMS
+          )
 
           archive_sha256="$(
             sha256sum build/gameshell/gameshell.sh | awk '{print $1}'
@@ -331,15 +425,45 @@ jobs:
             "$source_sha256" GameShell-source.tar.gz \
             > evidence/source-SHA256SUMS
 
+          (
+            cd build/gameshell
+            sha256sum --check --strict ../../evidence/game-archive-SHA256SUMS
+            sha256sum --check --strict ../../evidence/source-SHA256SUMS
+          )
+
       - name: Build unsigned package
         run: |
           set -euo pipefail
-          useradd -m builduser
-          chown -R builduser:builduser build
-          su builduser -c "
-            cd '$GITHUB_WORKSPACE/build/gameshell'
-            makepkg --noconfirm --cleanbuild
-          "
+          test "$(id -u builduser)" -ne 0
+
+          # Transfer only the prepared package directory.
+          chown -R builduser:builduser build/gameshell
+
+          python3 -I scripts/package-pipeline/build_workspace_boundary.py \
+            --user builduser \
+            --workspace "$GITHUB_WORKSPACE" \
+            --writable build/gameshell-generation \
+            --writable build/gameshell
+
+          runuser -u builduser -- \
+            env -i \
+            HOME=/home/builduser \
+            USER=builduser \
+            LOGNAME=builduser \
+            PATH=/usr/bin:/bin \
+            LANG=C.UTF-8 \
+            bash -euo pipefail -c '
+              test "$(id -u)" -ne 0
+              test -w "$1"
+              test -w "$1/PKGBUILD"
+              test ! -w "$2"
+              test ! -w "$2/build"
+              test ! -w "$2/evidence"
+              test ! -w "$2/candidate"
+              cd "$1"
+              makepkg --noconfirm --cleanbuild
+            ' _ "$GITHUB_WORKSPACE/build/gameshell" \
+              "$GITHUB_WORKSPACE"
 
       - name: Inspect and smoke-test candidate
         env:
@@ -376,6 +500,81 @@ jobs:
           grep -Fxq 'pkgname = gameshell' evidence/PKGINFO
           grep -Fxq 'arch = any' evidence/PKGINFO
           grep -Fxq 'license = GPL-3.0-only' evidence/PKGINFO
+
+          # Verify packaged source bytes against protected evidence.
+          # Read the staged candidate without extracting package files.
+          verify_packaged_source() {
+            local member="$1"
+            local checksum_file="$2"
+            local source_name="$3"
+            local expected actual
+            local -a records matches
+
+            mapfile -t records < "$checksum_file"
+            test "${#records[@]}" -eq 1
+
+            expected="${records[0]%% *}"
+            [[ "$expected" =~ ^[0-9a-f]{64}$ ]]
+            test "${records[0]}" = "$expected  $source_name"
+
+            mapfile -t matches < <(
+              awk -v member="$member" '
+                $0 == member || $0 == "./" member { print }
+              ' evidence/package-members-raw.txt
+            )
+
+            test "${#matches[@]}" -eq 1
+
+            actual="$(
+              runuser -u builduser -- \
+                env -i \
+                HOME=/home/builduser \
+                PATH=/usr/bin:/bin \
+                LANG=C.UTF-8 \
+                bsdtar -xOf "$GITHUB_WORKSPACE/candidate/$EXPECTED_PACKAGE" \
+                  -- "${matches[0]}" |
+                sha256sum
+            )"
+
+            actual="${actual%% *}"
+            [[ "$actual" =~ ^[0-9a-f]{64}$ ]]
+
+            if [[ "$actual" != "$expected" ]]; then
+              printf 'FAIL: Packaged source checksum mismatch: %s\n' \
+                "$member" >&2
+              return 1
+            fi
+
+            printf '%s  %s\n' "$actual" "$member" \
+              >> evidence/packaged-source-SHA256SUMS
+
+            printf 'PASS: Packaged source checksum verified: %s\n' \
+              "$member"
+          }
+
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+
+          runuser -u builduser -- \
+            env -i \
+            HOME=/home/builduser \
+            PATH=/usr/bin:/bin \
+            LANG=C.UTF-8 \
+            bsdtar -tf "$GITHUB_WORKSPACE/candidate/$EXPECTED_PACKAGE" \
+              > evidence/package-members-raw.txt
+
+          : > evidence/packaged-source-SHA256SUMS
+
+          verify_packaged_source \
+            usr/share/gameshell/gameshell.sh \
+            evidence/game-archive-SHA256SUMS \
+            gameshell.sh
+
+          verify_packaged_source \
+            "usr/share/gameshell/source/GameShell-${SOURCE_SHA}.tar.gz" \
+            evidence/source-SHA256SUMS \
+            GameShell-source.tar.gz
+
+          test "$(wc -l < evidence/packaged-source-SHA256SUMS)" -eq 2
 
           namcap build/gameshell/PKGBUILD \
             > evidence/namcap-PKGBUILD.txt 2>&1 || true

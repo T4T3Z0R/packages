@@ -87,22 +87,53 @@ jobs:
         run: |
           set -euo pipefail
           useradd --create-home builder
-          chown -R builder:builder "$GITHUB_WORKSPACE"
+          # Keep pipeline infrastructure outside the writable build tree.
+          test "$(id -u builder)" -ne 0
+          test -d "$GITHUB_WORKSPACE"
+          test ! -L "$GITHUB_WORKSPACE"
+          test ! -L build
+          mkdir -p build
+          test "$(stat -c '%u' build)" = "$(id -u)"
+          test ! -e build/keepassxc
+          test ! -L build/keepassxc
+          cp -a -- arch/keepassxc build/keepassxc
+          chown -R builder:builder build/keepassxc
+
+          python3 -I scripts/package-pipeline/build_workspace_boundary.py \
+            --user builder \
+            --workspace "$GITHUB_WORKSPACE" \
+            --writable build/keepassxc
+
+          # Verify actual access under the build account.
+          runuser -u builder -- \
+            bash -e -c '
+              test "$(id -u)" -ne 0
+              for protected in "$1" "$1/arch" "$1/.git" \
+                "$1/.github" "$1/scripts" "$1/build" "$2"
+              do
+                test -e "$protected"
+                test ! -w "$protected"
+              done
+              test -w "$3"
+              test -w "$3/PKGBUILD"
+            ' _ "$GITHUB_WORKSPACE" \
+              "$GITHUB_WORKSPACE/arch/keepassxc" \
+              "$GITHUB_WORKSPACE/build/keepassxc"
           runuser -u builder -- \
             bash -euo pipefail -c '
               cd "$1"
               gpg --batch --import keys/pgp/*.asc
               makepkg --noconfirm --cleanbuild
-            ' _ "$GITHUB_WORKSPACE/arch/keepassxc"
+            ' _ "$GITHUB_WORKSPACE/build/keepassxc"
 
       - name: Inspect candidate and record checksums
         run: |
           set -euo pipefail
           shopt -s nullglob
-          archives=(arch/keepassxc/*.pkg.tar.zst)
+          archives=(build/keepassxc/*.pkg.tar.zst)
           (( ${#archives[@]} == 1 || ${#archives[@]} == 2 ))
           names=(keepassxc)
-          if [[ -f arch/keepassxc/keepassxc-debug-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst ]]; then
+          if [[ -f build/keepassxc/keepassxc-debug-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst ]]; then
             names+=(keepassxc-debug)
           fi
           (( ${#names[@]} == ${#archives[@]} ))
@@ -111,7 +142,7 @@ jobs:
           : > evidence/package-names.txt
           for name in "${names[@]}"; do
             file="${name}-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst"
-            source="arch/keepassxc/$file"
+            source="build/keepassxc/$file"
             test -s "$source"
             bsdtar -xOf "$source" .PKGINFO | grep -Fxq "pkgname = $name"
             cp -- "$source" candidate/

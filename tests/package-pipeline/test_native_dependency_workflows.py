@@ -413,6 +413,25 @@ class NativePublisherTests(unittest.TestCase):
         )
 
     def wezterm_fixture(self):
+        # The common fixture creates a writable Noctalia recipe
+        # directory. It is unrelated to WezTerm and must not
+        # remain inside the protected metadata workspace.
+        self.assertEqual(
+            self.recipe,
+            self.root / "build/noctalia-custom",
+        )
+        self.assertEqual(list(self.recipe.iterdir()), [])
+        self.recipe.rmdir()
+        self.recipe.parent.rmdir()
+
+        # Exercise the actual B1 validator from the protected
+        # infrastructure fixture, rather than substituting a stub.
+        shutil.copy2(
+            ROOT / "scripts/package-pipeline"
+            / "build_workspace_boundary.py",
+            self.root / "scripts/package-pipeline",
+        )
+
         upstream = self.root / "upstream"
         upstream.mkdir()
 

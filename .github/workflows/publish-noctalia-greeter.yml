@@ -249,16 +249,56 @@ jobs:
         run: |
           set -euo pipefail
 
+          test "$(id -u)" -eq 0
+          test "$(git -C source/noctalia-greeter rev-parse HEAD)" = "$SOURCE_SHA"
+
           useradd -m builduser
+          test "$(id -u builduser)" -ne 0
 
-          chown -R builduser:builduser \
-            source \
-            build
+          mkdir -m 0755 candidate
 
-          su builduser -c "
-            cd '$GITHUB_WORKSPACE/build/noctalia-greeter'
-            makepkg --noconfirm --cleanbuild
-          "
+          (
+            cd build/noctalia-greeter
+            sha256sum --check --strict ../../evidence/source-SHA256SUMS
+          )
+
+          # Transfer only the prepared package directory.
+          chown -R builduser:builduser build/noctalia-greeter
+
+          python3 -I scripts/package-pipeline/build_workspace_boundary.py \
+            --user builduser \
+            --workspace "$GITHUB_WORKSPACE" \
+            --writable build/noctalia-greeter
+
+          runuser -u builduser -- \
+            env -i \
+            HOME=/home/builduser \
+            USER=builduser \
+            LOGNAME=builduser \
+            PATH=/usr/bin:/bin \
+            LANG=C.UTF-8 \
+            bash -euo pipefail -c '
+              test "$(id -u)" -ne 0
+
+              for protected in \
+                "$2" "$2/.git" "$2/.github" \
+                "$2/arch" "$2/scripts" "$2/source" \
+                "$2/source/noctalia-greeter" "$2/build" \
+                "$2/evidence" "$2/candidate"
+              do
+                test -d "$protected"
+                test ! -w "$protected"
+              done
+
+              test -f "$2/arch/noctalia-greeter-t4t3z0r/PKGBUILD.in"
+              test ! -w "$2/arch/noctalia-greeter-t4t3z0r/PKGBUILD.in"
+              test -w "$1"
+              test -w "$1/PKGBUILD"
+
+              cd "$1"
+              makepkg --noconfirm --cleanbuild
+            ' _ "$GITHUB_WORKSPACE/build/noctalia-greeter" \
+              "$GITHUB_WORKSPACE"
 
       - name: Inspect candidate package
         run: |

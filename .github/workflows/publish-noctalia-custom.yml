@@ -134,24 +134,82 @@ jobs:
         run: |
           set -euo pipefail
 
-          useradd -m builduser
+          test "$(id -u)" -eq 0
+          test "$(git -C source/noctalia rev-parse HEAD)" = "$SOURCE_SHA"
 
-          mkdir -p build/noctalia-custom
-          chown -R builduser:builduser source build
+          useradd -m builduser
+          test "$(id -u builduser)" -ne 0
+
+          mkdir -m 0755 build candidate evidence
+          mkdir -m 0755 build/noctalia-custom
+
+          # Preserve the authoritative source checkout and Git metadata.
+          git clone --no-local --no-checkout --template= \
+            "$GITHUB_WORKSPACE/source/noctalia" \
+            build/noctalia-validation
+
+          chown -R builduser:builduser build/noctalia-validation
+
+          python3 -I scripts/package-pipeline/build_workspace_boundary.py \
+            --user builduser \
+            --workspace "$GITHUB_WORKSPACE" \
+            --writable build/noctalia-validation
+
+          runuser -u builduser -- \
+            env -i \
+            HOME=/home/builduser \
+            USER=builduser \
+            LOGNAME=builduser \
+            PATH=/usr/bin:/bin \
+            LANG=C.UTF-8 \
+            bash -euo pipefail -c '
+              test "$(id -u)" -ne 0
+
+              for protected in \
+                "$1" "$1/.git" "$1/.github" \
+                "$1/arch" "$1/scripts" "$1/source" \
+                "$1/source/noctalia" "$1/build" \
+                "$1/build/noctalia-custom" \
+                "$1/candidate" "$1/evidence"
+              do
+                test -d "$protected"
+                test ! -w "$protected"
+              done
+
+              test ! -w "$1/arch/noctalia-custom/PKGBUILD.in"
+              test ! -w "$1/scripts/package-pipeline/generated_recipe_metadata.py"
+              test -w "$2"
+
+              cd "$2"
+              git checkout --detach "$3"
+              test "$(git rev-parse HEAD)" = "$3"
+              test -z "$(git status --porcelain)"
+            ' _ "$GITHUB_WORKSPACE" \
+              "$GITHUB_WORKSPACE/build/noctalia-validation" \
+              "$SOURCE_SHA"
 
       - name: Check formatting
         run: |
           set -euo pipefail
 
-          su builduser -c "
-            cd '$GITHUB_WORKSPACE/source/noctalia'
+          runuser -u builduser -- \
+            env -i \
+            HOME=/home/builduser \
+            USER=builduser \
+            LOGNAME=builduser \
+            PATH=/usr/bin:/bin \
+            LANG=C.UTF-8 \
+            bash -euo pipefail -s -- \
+              "$GITHUB_WORKSPACE/build/noctalia-validation" <<'FORMAT'
+          test "$(id -u)" -ne 0
+          cd "$1"
 
-            mapfile -d '' files < <(
-              find src lib \( -name '*.cpp' -o -name '*.h' \) -print0
-            )
+          mapfile -d '' files < <(
+            find src lib \( -name '*.cpp' -o -name '*.h' \) -print0
+          )
 
-            clang-format --dry-run -Werror \"\${files[@]}\"
-          "
+          clang-format --dry-run -Werror "${files[@]}"
+          FORMAT
 
       - name: Generate package source
         run: |
@@ -203,7 +261,18 @@ jobs:
 
           echo "SOURCE_SHA256=${source_sha256}" >> "$GITHUB_ENV"
 
+          (
+            cd build/noctalia-custom
+            sha256sum --check --strict ../../evidence/source-SHA256SUMS
+          )
+
           chown -R builduser:builduser build/noctalia-custom
+
+          python3 -I scripts/package-pipeline/build_workspace_boundary.py \
+            --user builduser \
+            --workspace "$GITHUB_WORKSPACE" \
+            --writable build/noctalia-validation \
+            --writable build/noctalia-custom
 
       - name: Preflight package metadata
         run: |
@@ -251,10 +320,26 @@ jobs:
         run: |
           set -euo pipefail
 
-          su builduser -c "
-            cd '$GITHUB_WORKSPACE/build/noctalia-custom'
-            makepkg --noconfirm --clean --cleanbuild
-          "
+          runuser -u builduser -- \
+            env -i \
+            HOME=/home/builduser \
+            USER=builduser \
+            LOGNAME=builduser \
+            PATH=/usr/bin:/bin \
+            LANG=C.UTF-8 \
+            bash -euo pipefail -c '
+              test "$(id -u)" -ne 0
+              test -w "$1"
+              test -w "$1/PKGBUILD"
+              test ! -w "$2"
+              test ! -w "$2/build"
+              test ! -w "$2/source/noctalia"
+              test ! -w "$2/evidence"
+              test ! -w "$2/candidate"
+              cd "$1"
+              makepkg --noconfirm --clean --cleanbuild
+            ' _ "$GITHUB_WORKSPACE/build/noctalia-custom" \
+              "$GITHUB_WORKSPACE"
 
       - name: Inspect candidate package
         run: |
@@ -384,13 +469,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          su builduser -c "
-            set -e
-            cd '$GITHUB_WORKSPACE/source/noctalia'
-            just build
-            just test debug --print-errorlogs
-            just lint
-          "
+          runuser -u builduser -- \
+            env -i \
+            HOME=/home/builduser \
+            USER=builduser \
+            LOGNAME=builduser \
+            PATH=/usr/bin:/bin \
+            LANG=C.UTF-8 \
+            bash -euo pipefail -c '
+              test "$(id -u)" -ne 0
+              cd "$1"
+              test "$(git rev-parse HEAD)" = "$2"
+              test -z "$(git status --porcelain)"
+              just build
+              just test debug --print-errorlogs
+              just lint
+            ' _ "$GITHUB_WORKSPACE/build/noctalia-validation" \
+              "$SOURCE_SHA"
 
       - name: Candidate summary
         env:
