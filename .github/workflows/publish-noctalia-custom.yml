@@ -214,36 +214,38 @@ jobs:
           # Catch shell/PKGBUILD syntax damage before compiling anything.
           bash -n "$pkgbuild"
 
-          # Ensure makepkg can parse the rendered metadata.
-          su builduser -c "
-            cd '$GITHUB_WORKSPACE/build/noctalia-custom'
-            makepkg --printsrcinfo > .SRCINFO
-          "
+          # Capture native metadata without evaluating the recipe as root
+          # or trusting a builder-created metadata file.
+          test -d evidence
+          test ! -L evidence
+          test "$(stat -c '%u' evidence)" = "$(id -u)"
 
-          cp \
-            build/noctalia-custom/.SRCINFO \
-            evidence/rendered-SRCINFO
+          metadata="$(mktemp evidence/.rendered-SRCINFO.XXXXXXXX)"
+          trap 'rm -f -- "$metadata"' EXIT
 
-          # Verify every declared runtime/build dependency is actually
-          # present in the CI image before makepkg spends time compiling.
-          mapfile -t declared_deps < <(
-            bash -c '
-              source "$1"
-              printf "%s\n" \
-                "${depends[@]}" \
-                "${makedepends[@]}"
-            ' _ "$pkgbuild"
-          )
+          runuser -u builduser -- \
+            env -i \
+            HOME=/home/builduser \
+            USER=builduser \
+            LOGNAME=builduser \
+            PATH=/usr/bin:/bin \
+            LANG=C.UTF-8 \
+            bash -e -o pipefail -c '
+              test "$(id -u)" -ne 0
+              cd "$1"
+              makepkg --printsrcinfo
+            ' _ "$GITHUB_WORKSPACE/build/noctalia-custom" \
+            > "$metadata"
 
-          missing="$(
-            pacman -T "${declared_deps[@]}" || true
-          )"
+          test -s "$metadata"
 
-          if [[ -n "$missing" ]]; then
-            echo "CI image is missing declared PKGBUILD dependencies:" >&2
-            printf '%s\n' "$missing" >&2
-            exit 1
-          fi
+          # Check declared dependencies against the explicitly
+          # provisioned CI image. Never install from generated metadata.
+          python3 scripts/package-pipeline/native_dependency_metadata.py \
+            --srcinfo "$metadata" \
+            --architecture "$(uname -m)"
+
+          mv -- "$metadata" evidence/rendered-SRCINFO
 
       - name: Build Pacman package
         run: |

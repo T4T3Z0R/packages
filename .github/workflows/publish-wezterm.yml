@@ -100,10 +100,32 @@ jobs:
           git -C "$tmp/wezterm" update-ref HEAD "$commit"
           test "$(git -C "$tmp/wezterm" rev-parse HEAD)" = "$commit"
 
+          useradd --create-home builder
+
+          # Give the builder access to the isolated Git history fixture
+          # without exposing the privileged workflow environment.
+          install -m 0644 \
+            "$GITHUB_WORKSPACE/arch/wezterm/PKGBUILD" \
+            "$tmp/PKGBUILD"
+
+          chmod 0711 "$tmp"
+          chown -R builder:builder "$tmp/wezterm"
+
           generated="$(
-            cd "$tmp"
-            source "$GITHUB_WORKSPACE/arch/wezterm/PKGBUILD"
-            pkgver
+            runuser -u builder -- \
+              env -i \
+              HOME=/home/builder \
+              USER=builder \
+              LOGNAME=builder \
+              PATH=/usr/bin:/bin \
+              LANG=C.UTF-8 \
+              bash -e -o pipefail -c '
+                test "$(id -u)" -ne 0
+                shopt -s inherit_errexit
+                cd "$1"
+                source "$1/PKGBUILD"
+                pkgver
+              ' _ "$tmp"
           )"
 
           printf 'Manifest pkgver: %s\n' "$PKGVER"
@@ -119,7 +141,7 @@ jobs:
       - name: Build both packages as unprivileged user
         run: |
           set -euo pipefail
-          useradd --create-home builder
+          test "$(id -u builder)" -ne 0
           chown -R builder:builder "$GITHUB_WORKSPACE"
           runuser -u builder -- \
             bash -c 'cd "$1" && makepkg --noconfirm --cleanbuild --nocheck' \
