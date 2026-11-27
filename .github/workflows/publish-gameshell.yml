@@ -345,8 +345,16 @@ jobs:
           do
             test -d "$protected"
             test ! -L "$protected"
-            printf 'Checking root ownership: %s\n' "$protected"
-            test "$(stat -c '%u' "$protected")" = "$(id -u)"
+            if [[ "$protected" == "$GITHUB_WORKSPACE" ]]; then
+              # GitHub mounts a host-owned workspace into the container.
+              # Its owner need not be root, but must not be the builder.
+              test "$(stat -c '%u' "$protected")" != "$(id -u builduser)"
+              runuser -u builduser -- test ! -w "$protected"
+              printf 'PASS: Mounted workspace protected from builder: %s\n' "$protected"
+            else
+              printf 'Checking root ownership: %s\n' "$protected"
+              test "$(stat -c '%u' "$protected")" = "$(id -u)"
+            fi
           done
 
           # Obtain trusted packaging inputs before upstream execution.

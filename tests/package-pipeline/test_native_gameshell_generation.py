@@ -426,6 +426,114 @@ chmod 755 "$output.sh"
 
             self.assertEqual(result.stdout, expected)
 
+    def test_runner_owned_workspace_and_ancestor(self):
+        # Reproduce the actual GitHub runner ownership:
+        # root-owned checkout contents under host-owned parents.
+        revision = self.fixture()
+
+        host_uid = 1001
+        host_gid = 1001
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+
+        parent = Path(temporary.name).resolve()
+        parent.chmod(0o755)
+
+        workspace = parent / "workspace"
+
+        shutil.move(str(self.root), str(workspace))
+
+        self.root = workspace
+        self.upstream = workspace / "source/GameShell"
+
+        self.env["HOME"] = str(workspace)
+        self.env["GITHUB_WORKSPACE"] = str(workspace)
+
+        os.chown(parent, host_uid, host_gid)
+        os.chown(workspace, host_uid, host_gid)
+
+        workspace.chmod(0o755)
+
+        self.assertEqual(workspace.stat().st_uid, host_uid)
+        self.assertEqual(parent.stat().st_uid, host_uid)
+        self.assertEqual(self.upstream.stat().st_uid, 0)
+
+        result = self.generate(revision)
+        self.success(result)
+
+        account = pwd.getpwnam("builduser")
+
+        self.assertNotEqual(account.pw_uid, host_uid)
+        self.assertNotEqual(account.pw_uid, 0)
+
+        self.assertIn(
+            "PASS: Mounted workspace protected from builder:",
+            result.stdout,
+        )
+
+        self.assertEqual(workspace.stat().st_uid, host_uid)
+        self.assertEqual(parent.stat().st_uid, host_uid)
+
+        self.assertEqual(
+            (workspace / "build").stat().st_uid,
+            0,
+        )
+
+        self.assertEqual(
+            (workspace / "evidence").stat().st_uid,
+            0,
+        )
+
+        self.assertEqual(
+            int(
+                (
+                    workspace
+                    / "build/gameshell-generation/generation-uid"
+                ).read_text()
+            ),
+            account.pw_uid,
+        )
+
+        for protected in (
+            parent,
+            workspace,
+            workspace / "arch",
+            workspace / "scripts",
+            workspace / "source/GameShell",
+            workspace / "build",
+            workspace / "candidate",
+            workspace / "evidence",
+        ):
+            result = self.execute([
+                "runuser", "-u", "builduser", "--",
+                "test", "!", "-w", str(protected),
+            ])
+            self.success(result)
+
+        result = self.execute([
+            "bash", "-e", "-o", "pipefail", "-c",
+            workflow_step(
+                "publish-gameshell.yml",
+                "Build unsigned package",
+            ),
+        ])
+
+        self.success(result)
+
+        packages = list(
+            (workspace / "build/gameshell").glob(
+                "gameshell-*.pkg.tar.*"
+            )
+        )
+
+        self.assertEqual(len(packages), 1)
+
+        self.assertEqual(
+            packages[0].stat().st_uid,
+            account.pw_uid,
+        )
+
     def test_invalid_generated_archive_stops_before_render(self):
         revision = self.fixture(invalid=True)
 
