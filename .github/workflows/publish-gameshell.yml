@@ -90,7 +90,14 @@ jobs:
           fi
 
           source_sha="$(git -C source/GameShell rev-parse HEAD)"
-          ref_sha="$(git -C source/GameShell rev-parse "${SOURCE_REF}^{commit}")"
+
+          python3 scripts/package-pipeline/generated_recipe_metadata.py \
+            validate-commit --sha "$source_sha" >/dev/null
+
+          ref_sha="$(
+            git -C source/GameShell \
+              rev-parse --verify "refs/tags/${SOURCE_REF}^{commit}"
+          )"
 
           if [[ "$source_sha" != "$ref_sha" ]]; then
             echo "Checked-out source does not match requested tag" >&2
@@ -101,20 +108,25 @@ jobs:
             git -C source/GameShell describe \
               --tags --abbrev=0 --match 'v[0-9]*' "$source_sha"
           )"
-          base_ver="${base_tag#v}"
+          python3 scripts/package-pipeline/generated_recipe_metadata.py \
+            gameshell-base-tag --tag "$base_tag" >/dev/null
+
           revs="$(
             git -C source/GameShell rev-list \
-              --count "${base_tag}..${source_sha}"
+              --count "refs/tags/${base_tag}..${source_sha}"
           )"
           short_sha="$(
             git -C source/GameShell rev-parse --short=12 "$source_sha"
           )"
 
-          if [[ "$revs" == 0 ]]; then
-            pkgver="$base_ver"
-          else
-            pkgver="${base_ver}.r${revs}.g${short_sha}"
-          fi
+          pkgver="$(
+            python3 scripts/package-pipeline/generated_recipe_metadata.py \
+              gameshell-version \
+              --tag "$base_tag" \
+              --distance "$revs" \
+              --source-sha "$source_sha" \
+              --abbreviation "$short_sha"
+          )"
 
           pkgrel="$(
             awk -F= '$1 == "pkgrel" { print $2; exit }' \
@@ -242,7 +254,8 @@ jobs:
             "refs/tags/${SOURCE_REF}:refs/tags/${SOURCE_REF}"
 
           current_ref_sha="$(
-            git -C source/GameShell rev-parse "${SOURCE_REF}^{commit}"
+            git -C source/GameShell \
+              rev-parse --verify "refs/tags/${SOURCE_REF}^{commit}"
           )"
           checked_out_sha="$(git -C source/GameShell rev-parse HEAD)"
 
@@ -296,15 +309,15 @@ jobs:
             sha256sum build/gameshell/README.packaging.md | awk '{print $1}'
           )"
 
-          sed \
-            -e "s/@PKGVER@/${PKGVER}/g" \
-            -e "s/@SOURCE_SHA@/${SOURCE_SHA}/g" \
-            -e "s/@ARCHIVE_SHA256@/${archive_sha256}/g" \
-            -e "s/@LAUNCHER_SHA256@/${launcher_sha256}/g" \
-            -e "s/@SOURCE_SHA256@/${source_sha256}/g" \
-            -e "s/@LICENSE_SHA256@/${license_sha256}/g" \
-            -e "s/@README_SHA256@/${readme_sha256}/g" \
-            arch/gameshell/PKGBUILD.in \
+          python3 scripts/package-pipeline/generated_recipe_metadata.py \
+            render --package gameshell \
+            --value "PKGVER=$PKGVER" \
+            --value "SOURCE_SHA=$SOURCE_SHA" \
+            --value "ARCHIVE_SHA256=$archive_sha256" \
+            --value "LAUNCHER_SHA256=$launcher_sha256" \
+            --value "SOURCE_SHA256=$source_sha256" \
+            --value "LICENSE_SHA256=$license_sha256" \
+            --value "README_SHA256=$readme_sha256" \
             > build/gameshell/PKGBUILD
 
           chmod 755 \

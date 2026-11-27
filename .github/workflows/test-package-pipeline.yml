@@ -177,6 +177,8 @@ jobs:
           python -m unittest discover -s tests/package-pipeline -p 'test_selection_ci_behavior.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_fixed_recipe_selection.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_fixed_recipe_metadata.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_generated_recipe_metadata.py' -v
+          python -m unittest discover -s tests/package-pipeline -p 'test_generated_recipe_workflows.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_merged_selection_validation.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_dispatch_unsigned_validation.py' -v
           python -m unittest discover -s tests/package-pipeline -p 'test_release_approval_policy.py' -v

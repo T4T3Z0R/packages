@@ -96,7 +96,8 @@ jobs:
             'refs/tags/v*:refs/tags/v*'
 
           source_sha="$(git -C source/noctalia rev-parse HEAD)"
-          short_sha="${source_sha:0:8}"
+          python3 scripts/package-pipeline/generated_recipe_metadata.py \
+            validate-commit --sha "$source_sha" >/dev/null
 
           base_tag="$(
             git -C source/noctalia describe \
@@ -106,8 +107,12 @@ jobs:
               "$source_sha"
           )"
 
-          base_ver="${base_tag#v}"
-          pkgver="${base_ver//-/_}.custom.${short_sha}"
+          pkgver="$(
+            python3 scripts/package-pipeline/generated_recipe_metadata.py \
+              noctalia-version \
+              --tag "$base_tag" \
+              --source-sha "$source_sha"
+          )"
 
           {
             echo "SOURCE_SHA=${source_sha}"
@@ -165,10 +170,10 @@ jobs:
               | awk '{print $1}'
           )"
 
-          sed \
-            -e "s/@PKGVER@/${PKGVER}/g" \
-            -e "s/@SOURCE_SHA256@/${source_sha256}/g" \
-            arch/noctalia-custom/PKGBUILD.in \
+          python3 scripts/package-pipeline/generated_recipe_metadata.py \
+            render --package noctalia-custom \
+            --value "PKGVER=$PKGVER" \
+            --value "SOURCE_SHA256=$source_sha256" \
             > build/noctalia-custom/PKGBUILD
 
           cp build/noctalia-custom/PKGBUILD \
@@ -180,15 +185,15 @@ jobs:
             > evidence/source-SHA256SUMS
 
           git -C source/noctalia \
-            diff --stat "${BASE_TAG}..${SOURCE_SHA}" \
+            diff --stat "refs/tags/${BASE_TAG}..${SOURCE_SHA}" \
             > evidence/custom-diff-stat.txt
 
           git -C source/noctalia \
-            diff --name-status "${BASE_TAG}..${SOURCE_SHA}" \
+            diff --name-status "refs/tags/${BASE_TAG}..${SOURCE_SHA}" \
             > evidence/custom-diff-files.txt
 
           git -C source/noctalia \
-            log --oneline "${BASE_TAG}..${SOURCE_SHA}" \
+            log --oneline "refs/tags/${BASE_TAG}..${SOURCE_SHA}" \
             > evidence/custom-commits.txt
 
           grep -Ei \

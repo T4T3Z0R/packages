@@ -93,10 +93,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ ! "$SOURCE_TAG" =~ ^v[0-9A-Za-z._+-]+$ ]]; then
-            echo "Invalid source tag: $SOURCE_TAG" >&2
-            exit 1
-          fi
+          pkgver="$(
+            python3 scripts/package-pipeline/generated_recipe_metadata.py \
+              greeter-version --tag "$SOURCE_TAG"
+          )"
 
           mkdir -p evidence
 
@@ -118,7 +118,10 @@ jobs:
             exit 1
           fi
 
-          tag_sha="$(jq -r '.object.sha' <<< "$ref_json")"
+          tag_sha="$(jq -er '.object.sha' <<< "$ref_json")"
+
+          python3 scripts/package-pipeline/generated_recipe_metadata.py \
+            validate-commit --sha "$tag_sha" >/dev/null
 
           tag_json="$(
             curl \
@@ -139,15 +142,35 @@ jobs:
             exit 1
           fi
 
-          api_source_sha="$(jq -r '.object.sha' <<< "$tag_json")"
+          jq -e \
+            --arg sha "$tag_sha" \
+            --arg tag "$SOURCE_TAG" \
+            '.sha == $sha and .tag == $tag and .object.type == "commit"' \
+            <<< "$tag_json" >/dev/null
+
+          api_source_sha="$(jq -er '.object.sha' <<< "$tag_json")"
+
+          python3 scripts/package-pipeline/generated_recipe_metadata.py \
+            validate-commit --sha "$api_source_sha" >/dev/null
+
+          local_tag_sha="$(
+            git -C source/noctalia-greeter \
+              rev-parse --verify "refs/tags/${SOURCE_TAG}"
+          )"
 
           local_source_sha="$(
             git -C source/noctalia-greeter \
-              rev-parse "${SOURCE_TAG}^{}"
+              rev-parse --verify "refs/tags/${SOURCE_TAG}^{commit}"
           )"
 
-          if [[ "$local_source_sha" != "$api_source_sha" ]]; then
-            echo "Checked-out commit does not match verified tag target" >&2
+          checked_out_sha="$(
+            git -C source/noctalia-greeter rev-parse HEAD
+          )"
+
+          if [[ "$local_tag_sha" != "$tag_sha" ||
+                "$local_source_sha" != "$api_source_sha" ||
+                "$checked_out_sha" != "$api_source_sha" ]]; then
+            echo "Checkout does not match verified tag identity" >&2
             exit 1
           fi
 
@@ -160,8 +183,7 @@ jobs:
             exit 1
           fi
 
-          pkgver="${SOURCE_TAG#v}"
-          pkgver="${pkgver//-/_}"
+          # Package version was validated before upstream lookup.
 
           {
             echo "SOURCE_TAG=$SOURCE_TAG"
@@ -208,10 +230,10 @@ jobs:
             | awk '{print $1}'
           )"
 
-          sed \
-            -e "s/@PKGVER@/${PKGVER}/g" \
-            -e "s/@SOURCE_SHA256@/${source_sha256}/g" \
-            arch/noctalia-greeter-t4t3z0r/PKGBUILD.in \
+          python3 scripts/package-pipeline/generated_recipe_metadata.py \
+            render --package noctalia-greeter-t4t3z0r \
+            --value "PKGVER=$PKGVER" \
+            --value "SOURCE_SHA256=$source_sha256" \
             > build/noctalia-greeter/PKGBUILD
 
           {
