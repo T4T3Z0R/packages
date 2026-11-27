@@ -272,17 +272,68 @@ jobs:
           PKGVER: ${{ needs.detect.outputs.pkgver }}
         run: |
           set -euo pipefail
+          trap 'printf "FAIL: Generation shell line %s, status %s\\n" "$LINENO" "$?" >&2' ERR
 
+          # Diagnose actual runner ownership before creating the build account.
+          echo '=== Runner identity and checkout ownership ==='
+          id
+          for directory in \
+            / \
+            "$(dirname "$(dirname "$GITHUB_WORKSPACE")")" \
+            "$(dirname "$GITHUB_WORKSPACE")" \
+            "$GITHUB_WORKSPACE" \
+            "$GITHUB_WORKSPACE/.git" \
+            "$GITHUB_WORKSPACE/.github" \
+            "$GITHUB_WORKSPACE/arch" \
+            "$GITHUB_WORKSPACE/scripts" \
+            "$GITHUB_WORKSPACE/source" \
+            "$GITHUB_WORKSPACE/source/GameShell" \
+            "$GITHUB_WORKSPACE/source/GameShell/.git"
+          do
+            stat -c '%n uid=%u gid=%g mode=%a type=%F' "$directory"
+          done
+
+          echo '=== Existing workspace output paths ==='
+          for directory in build candidate evidence; do
+            if [[ -e "$directory" || -L "$directory" ]]; then
+              stat -c '%n uid=%u gid=%g mode=%a type=%F' "$directory"
+            else
+              printf '%s: absent\n' "$directory"
+            fi
+          done
+
+          echo '=== Protected parent setup ==='
           # Establish protected parents before running upstream code.
           test "$(id -u)" -eq 0
           test "$(git -C source/GameShell rev-parse HEAD)" = "$SOURCE_SHA"
 
           useradd -m builduser
+          echo '=== Allocated build identity ==='
+          id builduser
           test "$(id -u builduser)" -ne 0
 
           mkdir -m 0755 build candidate evidence
           mkdir -m 0755 build/gameshell build/gameshell-generation
 
+          echo '=== Effective ownership before protected-directory assertions ==='
+          for directory in \
+            "$GITHUB_WORKSPACE" \
+            "$GITHUB_WORKSPACE/source" \
+            "$GITHUB_WORKSPACE/source/GameShell" \
+            "$GITHUB_WORKSPACE/build" \
+            "$GITHUB_WORKSPACE/build/gameshell" \
+            "$GITHUB_WORKSPACE/candidate" \
+            "$GITHUB_WORKSPACE/evidence"
+          do
+            stat -c '%n uid=%u gid=%g mode=%a type=%F' "$directory"
+            if runuser -u builduser -- test -w "$directory"; then
+              printf 'Builder write access: YES: %s\n' "$directory"
+            else
+              printf 'Builder write access: NO: %s\n' "$directory"
+            fi
+          done
+
+          echo '=== Enforce original protected-directory assertions ==='
           for protected in \
             "$GITHUB_WORKSPACE" \
             "$GITHUB_WORKSPACE/source" \
@@ -294,6 +345,7 @@ jobs:
           do
             test -d "$protected"
             test ! -L "$protected"
+            printf 'Checking root ownership: %s\n' "$protected"
             test "$(stat -c '%u' "$protected")" = "$(id -u)"
           done
 
@@ -319,6 +371,7 @@ jobs:
             GameShell-source/lib/profile.sh \
             GameShell-source/utils/gameshell_archive.sh
           do
+            printf 'Checking required source archive member: %s\n' "$required"
             grep -Fxq "$required" evidence/source-archive-files.txt
           done
 
