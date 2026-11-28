@@ -120,7 +120,7 @@ jobs:
           test "$GITHUB_SHA" = "$EXPECTED_REVISION"
 
       - name: Install test dependencies
-        run: pacman -Syu --noconfirm --needed python bash git gnupg libarchive zstd diffutils jq base-devel gawk gettext
+        run: pacman -Syu --noconfirm --needed python bash git gnupg libarchive zstd diffutils jq base-devel gawk gettext acl
 
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -433,6 +433,18 @@ jobs:
         env:
           PACKAGE_PIPELINE_NATIVE_TESTS: "1"
         run: python -m unittest discover -s tests/package-pipeline -p 'test_native_gameshell_generation.py' -v
+
+      - name: Verify portable candidate intake
+        run: python -m unittest discover -s tests/package-pipeline -p 'test_candidate_intake.py' -v
+
+      - name: Verify native candidate intake boundaries
+        env:
+          PACKAGE_PIPELINE_NATIVE_TESTS: "1"
+        run: |
+          set -euo pipefail
+          command -v setfacl
+          command -v getfacl
+          python -m unittest discover -s tests/package-pipeline -p 'test_native_candidate_intake.py' -v
 
       - name: Run real-package integration tests
         run: python -m unittest discover -s tests/package-pipeline -p "test_integration.py" -v
