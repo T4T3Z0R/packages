@@ -50,6 +50,8 @@ jobs:
     steps:
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Verify requested infrastructure revision
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_revision != '' }}
@@ -63,6 +65,7 @@ jobs:
       - name: Checkout upstream GameShell
         uses: actions/checkout@v6
         with:
+          persist-credentials: false
           repository: phyver/GameShell
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || 'latest' }}
           fetch-depth: 0
@@ -218,10 +221,13 @@ jobs:
 
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Checkout exact upstream source
         uses: actions/checkout@v6
         with:
+          persist-credentials: false
           repository: phyver/GameShell
           ref: ${{ needs.detect.outputs.source_sha }}
           fetch-depth: 0
@@ -774,6 +780,8 @@ jobs:
 
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Trust checked-out repository
         run: |

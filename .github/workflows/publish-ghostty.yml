@@ -44,6 +44,8 @@ jobs:
 
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Verify requested infrastructure revision
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_revision != '' }}
@@ -231,6 +233,8 @@ jobs:
 
       - name: Checkout package infrastructure
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Load verified Ghostty source selection
         run: |
