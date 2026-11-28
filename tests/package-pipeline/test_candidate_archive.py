@@ -2035,5 +2035,956 @@ class FamilyMemberSelectionTests(unittest.TestCase):
             inspector.assert_not_called()
 
 
+class MemberStreamingTests(unittest.TestCase):
+
+    def setUp(self):
+        import hashlib
+
+        self.name = "usr/share/selected-executable"
+        self.payload = b"candidate executable fixture\n"
+        self.digest = hashlib.sha256(
+            self.payload
+        ).hexdigest()
+
+        self.output = io.BytesIO()
+
+    def archive_with(self, *members):
+        return (
+            body()
+            + b"".join(members)
+            + bytes(1024)
+        )
+
+    def valid_archive(self):
+        return self.archive_with(
+            member(self.name, self.payload)
+        )
+
+    def request(self):
+        return (
+            self.name,
+            len(self.payload),
+            self.digest,
+            self.output,
+        )
+
+    def stream(self, data, transfer=None, requests=None):
+        if transfer is None:
+            transfer = self.request()
+
+        if requests is None:
+            requests = (self.name,)
+
+        return archive.inspect_tar_stream(
+            io.BytesIO(data),
+            requested_members=requests,
+            member_transfer=transfer,
+        )
+
+    def test_exact_streamed_bytes(self):
+        result = self.stream(self.valid_archive())
+
+        self.assertEqual(
+            self.output.getvalue(),
+            self.payload,
+        )
+
+        self.assertEqual(
+            result["selected_members"],
+            {
+                self.name: {
+                    "size": len(self.payload),
+                    "sha256": self.digest,
+                },
+            },
+        )
+
+    def test_streaming_inventory_matches_hashing(self):
+        data = self.valid_archive()
+
+        ordinary = archive.inspect_tar_stream(
+            io.BytesIO(data),
+            requested_members=(self.name,),
+        )
+
+        self.assertEqual(
+            self.stream(data),
+            ordinary,
+        )
+
+    def test_only_requested_transfer_member_streamed(self):
+        import hashlib
+
+        other = "usr/share/other-member"
+        other_payload = b"other selected bytes"
+
+        result = self.stream(
+            self.archive_with(
+                member(other, other_payload),
+                member(self.name, self.payload),
+                member("usr/share/unselected", b"ignored"),
+            ),
+            requests=(other, self.name),
+        )
+
+        self.assertEqual(
+            self.output.getvalue(),
+            self.payload,
+        )
+
+        self.assertEqual(
+            set(result["selected_members"]),
+            {self.name, other},
+        )
+
+        self.assertEqual(
+            result["selected_members"][other],
+            {
+                "size": len(other_payload),
+                "sha256": hashlib.sha256(
+                    other_payload
+                ).hexdigest(),
+            },
+        )
+
+    def test_multichunk_streaming(self):
+        import hashlib
+
+        class RecordingOutput(io.BytesIO):
+            def __init__(self):
+                super().__init__()
+                self.lengths = []
+
+            def write(self, data):
+                self.lengths.append(len(data))
+                return super().write(data)
+
+        payload = b"x" * (archive.TAR_READ_CHUNK + 17)
+        digest = hashlib.sha256(payload).hexdigest()
+        output = RecordingOutput()
+
+        result = self.stream(
+            self.archive_with(
+                member(self.name, payload)
+            ),
+            transfer=(
+                self.name,
+                len(payload),
+                digest,
+                output,
+            ),
+        )
+
+        self.assertEqual(
+            output.lengths,
+            [archive.TAR_READ_CHUNK, 17],
+        )
+
+        self.assertEqual(output.getvalue(), payload)
+
+        self.assertEqual(
+            result["selected_members"][self.name],
+            {
+                "size": len(payload),
+                "sha256": digest,
+            },
+        )
+
+    def test_materialized_size_policy_boundary(self):
+        limit = archive.MAX_MATERIALIZED_MEMBER_BYTES
+
+        self.assertEqual(limit, 128 * 1024**2)
+
+        request = (
+            self.name,
+            limit,
+            self.digest,
+            self.output,
+        )
+
+        self.assertEqual(
+            archive.validate_member_transfer(
+                request, {self.name}
+            ),
+            request,
+        )
+
+    def test_invalid_transfer_request_structure(self):
+        for request in (
+            [],
+            [self.name, 1, self.digest, self.output],
+            (),
+            (self.name,),
+            (self.name, 1, self.digest),
+            17,
+        ):
+            with self.subTest(request=request):
+                with self.assertRaisesRegex(
+                    archive.ArchiveError,
+                    "Invalid member transfer request",
+                ):
+                    self.stream(
+                        self.valid_archive(),
+                        transfer=request,
+                    )
+
+        self.assertEqual(self.output.getvalue(), b"")
+
+    def test_transfer_member_must_be_selected(self):
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "must be explicitly selected",
+        ):
+            self.stream(
+                self.valid_archive(),
+                requests=("usr/share/other",),
+            )
+
+        self.assertEqual(self.output.getvalue(), b"")
+
+    def test_invalid_expected_member_sizes(self):
+        for size in (
+            0,
+            -1,
+            True,
+            1.5,
+            "17",
+            archive.MAX_MATERIALIZED_MEMBER_BYTES + 1,
+        ):
+            with self.subTest(size=size):
+                with self.assertRaisesRegex(
+                    archive.ArchiveError,
+                    "Materialized member size outside policy",
+                ):
+                    self.stream(
+                        self.valid_archive(),
+                        transfer=(
+                            self.name,
+                            size,
+                            self.digest,
+                            self.output,
+                        ),
+                    )
+
+        self.assertEqual(self.output.getvalue(), b"")
+
+    def test_invalid_expected_member_digests(self):
+        for digest in (
+            "",
+            "invalid",
+            "A" * 64,
+            "a" * 63,
+            "a" * 65,
+            None,
+            17,
+        ):
+            with self.subTest(digest=digest):
+                with self.assertRaisesRegex(
+                    archive.ArchiveError,
+                    "Invalid expected member digest",
+                ):
+                    self.stream(
+                        self.valid_archive(),
+                        transfer=(
+                            self.name,
+                            len(self.payload),
+                            digest,
+                            self.output,
+                        ),
+                    )
+
+        self.assertEqual(self.output.getvalue(), b"")
+
+    def test_invalid_output_stream(self):
+        for output in (
+            None,
+            17,
+            "not a stream",
+            object(),
+        ):
+            with self.subTest(output=output):
+                with self.assertRaisesRegex(
+                    archive.ArchiveError,
+                    "Invalid member output stream",
+                ):
+                    self.stream(
+                        self.valid_archive(),
+                        transfer=(
+                            self.name,
+                            len(self.payload),
+                            self.digest,
+                            output,
+                        ),
+                    )
+
+    def test_member_size_mismatch_precedes_output(self):
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Materialized member size mismatch",
+        ):
+            self.stream(
+                self.valid_archive(),
+                transfer=(
+                    self.name,
+                    len(self.payload) + 1,
+                    self.digest,
+                    self.output,
+                ),
+            )
+
+        self.assertEqual(self.output.getvalue(), b"")
+
+    def test_empty_materialized_member_rejected(self):
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Materialized member size mismatch",
+        ):
+            self.stream(
+                self.archive_with(
+                    member(self.name, b"")
+                )
+            )
+
+        self.assertEqual(self.output.getvalue(), b"")
+
+    def test_wrong_member_digest_rejects_provisional_bytes(self):
+        wrong_digest = (
+            "0" if self.digest[0] != "0" else "1"
+        ) + self.digest[1:]
+
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Materialized member digest mismatch",
+        ):
+            self.stream(
+                self.valid_archive(),
+                transfer=(
+                    self.name,
+                    len(self.payload),
+                    wrong_digest,
+                    self.output,
+                ),
+            )
+
+        # The receiver, not the parser, owns cleanup.
+        self.assertEqual(
+            self.output.getvalue(),
+            self.payload,
+        )
+
+    def test_incomplete_output_write_rejected(self):
+        class ShortOutput:
+            def write(self, data):
+                return len(data) - 1
+
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Incomplete selected member write",
+        ):
+            self.stream(
+                self.valid_archive(),
+                transfer=(
+                    self.name,
+                    len(self.payload),
+                    self.digest,
+                    ShortOutput(),
+                ),
+            )
+
+    def test_invalid_output_write_results_rejected(self):
+        class InvalidOutput:
+            def __init__(self, result):
+                self.result = result
+
+            def write(self, data):
+                return self.result
+
+        for result in (
+            None,
+            True,
+            -1,
+            len(self.payload) + 1,
+        ):
+            with self.subTest(result=result):
+                with self.assertRaisesRegex(
+                    archive.ArchiveError,
+                    "Incomplete selected member write",
+                ):
+                    self.stream(
+                        self.valid_archive(),
+                        transfer=(
+                            self.name,
+                            len(self.payload),
+                            self.digest,
+                            InvalidOutput(result),
+                        ),
+                    )
+
+    def test_output_exception_propagates(self):
+        class FailedOutput:
+            def write(self, data):
+                raise OSError("fixture write failure")
+
+        with self.assertRaisesRegex(
+            OSError,
+            "fixture write failure",
+        ):
+            self.stream(
+                self.valid_archive(),
+                transfer=(
+                    self.name,
+                    len(self.payload),
+                    self.digest,
+                    FailedOutput(),
+                ),
+            )
+
+    def test_truncated_member_payload_rejected(self):
+        data = (
+            body()
+            + member(self.name, self.payload)[:515]
+        )
+
+        with self.assertRaises(
+            archive.ArchiveError
+        ):
+            self.stream(data)
+
+        self.assertEqual(self.output.getvalue(), b"")
+
+    def test_missing_transfer_member_rejected(self):
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Missing selected archive members",
+        ):
+            self.stream(self.archive_with())
+
+        self.assertEqual(self.output.getvalue(), b"")
+
+    def test_nonregular_transfer_members_rejected(self):
+        cases = (
+            member(
+                self.name,
+                kind=tarfile.DIRTYPE,
+            ),
+            member(
+                self.name,
+                kind=tarfile.SYMTYPE,
+                target="other",
+            ),
+        )
+
+        for entry in cases:
+            with self.subTest(entry=entry[:100]):
+                with self.assertRaisesRegex(
+                    archive.ArchiveError,
+                    "Selected member is not regular",
+                ):
+                    self.stream(
+                        self.archive_with(entry)
+                    )
+
+        self.assertEqual(self.output.getvalue(), b"")
+
+    def test_duplicate_after_streaming_rejected(self):
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Duplicate archive member",
+        ):
+            self.stream(
+                self.archive_with(
+                    member(self.name, self.payload),
+                    member(self.name, b"duplicate"),
+                )
+            )
+
+        self.assertEqual(
+            self.output.getvalue(),
+            self.payload,
+        )
+
+    def test_invalid_trailing_data_after_streaming(self):
+        with self.assertRaises(
+            archive.ArchiveError
+        ):
+            self.stream(
+                self.valid_archive() + b"x" * 512
+            )
+
+        self.assertEqual(
+            self.output.getvalue(),
+            self.payload,
+        )
+
+    def test_streaming_requires_expected_archive_digest(self):
+        from unittest.mock import patch
+
+        with (
+            patch.object(
+                archive,
+                "require_unprivileged",
+            ),
+            patch.object(
+                archive.os,
+                "open",
+            ) as opener,
+        ):
+            with self.assertRaisesRegex(
+                archive.ArchiveError,
+                "requires an expected archive digest",
+            ):
+                archive.inspect_package(
+                    "/unused/package.pkg.tar.zst",
+                    requested_members=(self.name,),
+                    member_transfer=self.request(),
+                )
+
+            opener.assert_not_called()
+
+        self.assertEqual(self.output.getvalue(), b"")
+
+    def test_archive_digest_mismatch_precedes_streaming(self):
+        import tempfile
+
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixture.pkg.tar.zst"
+            path.write_bytes(b"wrong archive bytes")
+
+            with (
+                patch.object(
+                    archive,
+                    "require_unprivileged",
+                ),
+                patch.object(
+                    archive.subprocess,
+                    "Popen",
+                ) as decompressor,
+            ):
+                with self.assertRaisesRegex(
+                    archive.ArchiveError,
+                    "Package digest does not match protected intake",
+                ):
+                    archive.inspect_package(
+                        path,
+                        expected_sha256="0" * 64,
+                        requested_members=(self.name,),
+                        member_transfer=self.request(),
+                    )
+
+                decompressor.assert_not_called()
+
+        self.assertEqual(self.output.getvalue(), b"")
+
+
+
+class VerifiedMemberReaderTests(unittest.TestCase):
+
+    def setUp(self):
+        from unittest.mock import Mock
+
+        class PrivilegeError(RuntimeError):
+            pass
+
+        self.privilege_error = PrivilegeError
+        self.guard = Mock()
+
+        self.member = "usr/bin/broot"
+        self.payload = b"fixture"
+        self.digest = hashlib.sha256(
+            self.payload
+        ).hexdigest()
+
+        self.package = Path(
+            "/protected/broot-1.0-1-x86_64.pkg.tar.zst"
+        )
+
+        self.output = Mock(spec=io.BytesIO)
+        self.buffer = io.BytesIO()
+        self.output.write.side_effect = self.buffer.write
+        self.output.flush.side_effect = self.buffer.flush
+
+        self.arguments = {
+            "name": "broot",
+            "version": VERSION,
+            "architecture": "x86_64",
+            "archive_sha256": DIGEST,
+            "member": self.member,
+            "member_size": len(self.payload),
+            "member_sha256": self.digest,
+            "output": self.output,
+        }
+
+        self.basic_guard = self.enterContext(
+            patch.object(
+                archive,
+                "require_unprivileged",
+            )
+        )
+
+        self.guard_loader = self.enterContext(
+            patch.object(
+                archive,
+                "load_member_privilege_guard",
+                return_value={
+                    "PrivilegeError": PrivilegeError,
+                    "require_inspection_identity": self.guard,
+                },
+            )
+        )
+
+        self.inspector = self.enterContext(
+            patch.object(
+                archive,
+                "inspect_package",
+                side_effect=self.inspect_fixture,
+            )
+        )
+
+    def inspect_fixture(
+        self,
+        package,
+        *,
+        expected_sha256,
+        requested_members,
+        member_transfer,
+    ):
+        result = archive.inspect_tar_stream(
+            io.BytesIO(body() + ZERO * 2),
+            requested_members=requested_members,
+            member_transfer=member_transfer,
+        )
+
+        result.update({
+            "package": package.name,
+            "sha256": DIGEST,
+            "compressed_bytes": 1024,
+        })
+
+        return result
+
+    def read(self, package=None, **overrides):
+        arguments = dict(self.arguments)
+        arguments.update(overrides)
+
+        if package is None:
+            package = self.package
+
+        return archive.stream_verified_member(
+            package,
+            **arguments,
+        )
+
+    def assert_no_inspection(self):
+        self.inspector.assert_not_called()
+        self.output.write.assert_not_called()
+        self.output.flush.assert_not_called()
+
+    def test_exact_verified_member_result(self):
+        result = self.read()
+
+        self.basic_guard.assert_called_once_with()
+        self.guard_loader.assert_called_once_with()
+        self.guard.assert_called_once_with()
+
+        self.inspector.assert_called_once_with(
+            self.package,
+            expected_sha256=DIGEST,
+            requested_members=(self.member,),
+            member_transfer=(
+                self.member,
+                len(self.payload),
+                self.digest,
+                self.output,
+            ),
+        )
+
+        self.assertEqual(
+            self.buffer.getvalue(),
+            self.payload,
+        )
+
+        self.output.flush.assert_called_once_with()
+
+        self.assertEqual(
+            result,
+            {
+                "identity": {
+                    "pkgname": "broot",
+                    "pkgver": VERSION,
+                    "arch": "x86_64",
+                    "filename": self.package.name,
+                    "sha256": DIGEST,
+                },
+                "selected_members": {
+                    self.member: {
+                        "size": len(self.payload),
+                        "sha256": self.digest,
+                    },
+                },
+            },
+        )
+
+    def test_basic_privilege_rejection_precedes_guard_loading(self):
+        self.basic_guard.side_effect = archive.ArchiveError(
+            "Unprivileged identity required"
+        )
+
+        with self.assertRaises(archive.ArchiveError):
+            self.read()
+
+        self.guard_loader.assert_not_called()
+        self.guard.assert_not_called()
+        self.assert_no_inspection()
+
+    def test_guard_loading_failure_precedes_inspection(self):
+        self.guard_loader.side_effect = archive.ArchiveError(
+            "Untrusted member privilege guard"
+        )
+
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Untrusted member privilege guard",
+        ):
+            self.read()
+
+        self.guard.assert_not_called()
+        self.assert_no_inspection()
+
+    def test_full_privilege_rejection_precedes_inspection(self):
+        failure = self.privilege_error(
+            "NoNewPrivs must be enabled"
+        )
+
+        self.guard.side_effect = failure
+
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "NoNewPrivs must be enabled",
+        ) as caught:
+            self.read()
+
+        self.assertIs(
+            caught.exception.__cause__,
+            failure,
+        )
+
+        self.assert_no_inspection()
+
+    def test_unsafe_source_paths_rejected(self):
+        filename = self.package.name
+
+        paths = (
+            filename,
+            f"//protected/{filename}",
+            f"/protected//{filename}",
+            f"/protected/./{filename}",
+            f"/protected/../{filename}",
+            f"/protected/{filename}/",
+            f"/protected/wrong-{filename}",
+        )
+
+        for package in paths:
+            with self.subTest(package=package):
+                with self.assertRaises(archive.ArchiveError):
+                    self.read(package)
+
+        self.assert_no_inspection()
+
+    def test_invalid_expected_package_identity_rejected(self):
+        cases = (
+            {"name": "../broot"},
+            {"name": ""},
+            {"version": "../1.0-1"},
+            {"version": ""},
+            {"architecture": "aarch64"},
+            {"architecture": ""},
+            {"archive_sha256": None},
+            {"archive_sha256": "a" * 63},
+            {"archive_sha256": "G" * 64},
+        )
+
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                with self.assertRaises(archive.ArchiveError):
+                    self.read(**overrides)
+
+        self.assert_no_inspection()
+
+    def test_invalid_member_identity_rejected(self):
+        cases = (
+            {"member": "../broot"},
+            {"member": "/usr/bin/broot"},
+            {"member": "./usr/bin/broot"},
+            {"member": ".PKGINFO"},
+            {"member": ""},
+            {"member_size": 0},
+            {"member_size": -1},
+            {"member_size": True},
+            {"member_size": 1.5},
+            {
+                "member_size":
+                    archive.MAX_MATERIALIZED_MEMBER_BYTES + 1
+            },
+            {"member_sha256": None},
+            {"member_sha256": "a" * 63},
+            {"member_sha256": "G" * 64},
+        )
+
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                with self.assertRaises(archive.ArchiveError):
+                    self.read(**overrides)
+
+        self.assert_no_inspection()
+
+    def test_output_without_flush_rejected(self):
+        class WriteOnly:
+            def write(self, data):
+                raise AssertionError("Unexpected output")
+
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Invalid member output flush operation",
+        ):
+            self.read(output=WriteOnly())
+
+        self.assert_no_inspection()
+
+    def test_archive_failure_does_not_flush_output(self):
+        self.inspector.side_effect = archive.ArchiveError(
+            "Package changed during inspection"
+        )
+
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Package changed during inspection",
+        ):
+            self.read()
+
+        self.output.flush.assert_not_called()
+
+    def test_wrong_member_size_rejected_before_output(self):
+        with self.assertRaises(archive.ArchiveError):
+            self.read(member_size=len(self.payload) + 1)
+
+        self.assertEqual(self.buffer.getvalue(), b"")
+        self.output.flush.assert_not_called()
+
+    def test_wrong_member_digest_invalidates_output(self):
+        with self.assertRaises(archive.ArchiveError):
+            self.read(member_sha256="0" * 64)
+
+        self.output.flush.assert_not_called()
+
+    def test_late_archive_failure_invalidates_provisional_bytes(self):
+        def inspect_and_fail(*args, **kwargs):
+            self.inspect_fixture(*args, **kwargs)
+
+            raise archive.ArchiveError(
+                "Package changed during inspection"
+            )
+
+        self.inspector.side_effect = inspect_and_fail
+
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Package changed during inspection",
+        ):
+            self.read()
+
+        self.assertEqual(
+            self.buffer.getvalue(),
+            self.payload,
+        )
+
+        self.output.flush.assert_not_called()
+
+    def test_metadata_identity_mismatch_invalidates_output(self):
+        def wrong_identity(*args, **kwargs):
+            result = self.inspect_fixture(*args, **kwargs)
+
+            result["metadata"][".PKGINFO"] = pkginfo(
+                name="other"
+            )
+
+            return result
+
+        self.inspector.side_effect = wrong_identity
+
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Package identity mismatch",
+        ):
+            self.read()
+
+        self.assertEqual(
+            self.buffer.getvalue(),
+            self.payload,
+        )
+
+        self.output.flush.assert_not_called()
+
+    def test_selected_result_mismatch_invalidates_output(self):
+        def wrong_result(*args, **kwargs):
+            result = self.inspect_fixture(*args, **kwargs)
+
+            result["selected_members"][self.member]["sha256"] = (
+                "0" * 64
+            )
+
+            return result
+
+        self.inspector.side_effect = wrong_result
+
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Verified member result differs from expected identity",
+        ):
+            self.read()
+
+        self.assertEqual(
+            self.buffer.getvalue(),
+            self.payload,
+        )
+
+        self.output.flush.assert_not_called()
+
+    def test_missing_selected_result_invalidates_output(self):
+        def missing_result(*args, **kwargs):
+            result = self.inspect_fixture(*args, **kwargs)
+            del result["selected_members"]
+            return result
+
+        self.inspector.side_effect = missing_result
+
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Selected member result inventory mismatch",
+        ):
+            self.read()
+
+        self.output.flush.assert_not_called()
+
+    def test_output_flush_failure_propagates(self):
+        self.output.flush.side_effect = OSError(
+            "Output flush failed"
+        )
+
+        with self.assertRaisesRegex(
+            OSError,
+            "Output flush failed",
+        ):
+            self.read()
+
+        self.assertEqual(
+            self.buffer.getvalue(),
+            self.payload,
+        )
+
+        self.output.flush.assert_called_once_with()
+
+
 if __name__ == "__main__":
     unittest.main()

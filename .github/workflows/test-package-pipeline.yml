@@ -473,6 +473,22 @@ jobs:
           pacman -Q pax-utils python-pyelftools
           python -I -B -m unittest discover -s tests/package-pipeline -p 'test_native_candidate_linkage.py' -v
 
+      - name: Verify native candidate member receiver boundary
+        timeout-minutes: 15
+        env:
+          PACKAGE_PIPELINE_NATIVE_TESTS: "1"
+        run: |
+          set -euo pipefail
+          test "$(id -u)" = 0
+          test "$(id -g)" = 0
+          command -v python
+          command -v zstd
+          command -v bsdtar
+          command -v setpriv
+          command -v setfacl
+          command -v getfacl
+          python -I -B -m unittest discover -s tests/package-pipeline -p 'test_native_candidate_member_receiver.py' -v
+
       - name: Run real-package integration tests
         run: python -m unittest discover -s tests/package-pipeline -p "test_integration.py" -v
 

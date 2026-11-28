@@ -28,6 +28,7 @@ MAX_MEMBER_BYTES = 512 * 1024**2
 MAX_METADATA_BYTES = 1024**2
 MAX_MEMBERS = 25_000
 MAX_SELECTED_MEMBERS = 64
+MAX_MATERIALIZED_MEMBER_BYTES = 128 * 1024**2
 MAX_PATH_BYTES = 4096
 INSPECTION_TIMEOUT = 300
 PROCESS_CLEANUP_TIMEOUT = 30
@@ -963,9 +964,131 @@ def hash_member_payload(reader, size):
     return result.hexdigest()
 
 
-def inspect_tar_stream(stream, *, requested_members=()):
-    """Inspect a USTAR archive, optionally hashing selected members."""
+def validate_member_transfer(
+    member_transfer,
+    selected,
+):
+    """Validate one caller-controlled provisional member stream."""
+
+    if member_transfer is None:
+        return None
+
+    if (
+        not isinstance(member_transfer, tuple)
+        or len(member_transfer) != 4
+    ):
+        raise ArchiveError(
+            "Invalid member transfer request"
+        )
+
+    name, size, digest, output = member_transfer
+
+    if (
+        not isinstance(name, str)
+        or name not in selected
+    ):
+        raise ArchiveError(
+            "Transfer member must be explicitly selected"
+        )
+
+    if (
+        type(size) is not int
+        or not 0 < size <= MAX_MATERIALIZED_MEMBER_BYTES
+    ):
+        raise ArchiveError(
+            "Materialized member size outside policy"
+        )
+
+    if (
+        not isinstance(digest, str)
+        or PACKAGE_DIGEST.fullmatch(digest) is None
+    ):
+        raise ArchiveError(
+            "Invalid expected member digest"
+        )
+
+    if not callable(getattr(output, "write", None)):
+        raise ArchiveError(
+            "Invalid member output stream"
+        )
+
+    return member_transfer
+
+
+def transfer_member_payload(
+    reader,
+    size,
+    *,
+    expected_size,
+    expected_sha256,
+    output,
+):
+    """Stream provisional bytes and verify exact member identity.
+
+    The caller owns output and must discard all provisional bytes
+    if any subsequent archive or family validation fails.
+
+    This function does not open, publish, chmod or execute files.
+    """
+
+    if (
+        type(size) is not int
+        or type(expected_size) is not int
+        or not 0 < size <= MAX_MATERIALIZED_MEMBER_BYTES
+        or size != expected_size
+    ):
+        raise ArchiveError(
+            "Materialized member size mismatch"
+        )
+
+    if (
+        not isinstance(expected_sha256, str)
+        or PACKAGE_DIGEST.fullmatch(expected_sha256) is None
+    ):
+        raise ArchiveError(
+            "Invalid expected member digest"
+        )
+
+    result = hashlib.sha256()
+    remaining = size
+
+    while remaining:
+        length = min(remaining, TAR_READ_CHUNK)
+        data = read_exact(reader, length)
+
+        written = output.write(data)
+
+        if type(written) is not int or written != len(data):
+            raise ArchiveError(
+                "Incomplete selected member write"
+            )
+
+        result.update(data)
+        remaining -= length
+
+    actual_digest = result.hexdigest()
+
+    if actual_digest != expected_sha256:
+        raise ArchiveError(
+            "Materialized member digest mismatch"
+        )
+
+    return actual_digest
+
+
+def inspect_tar_stream(
+    stream,
+    *,
+    requested_members=(),
+    member_transfer=None,
+):
+    """Inspect USTAR and optionally stream one selected member."""
     selected = validate_member_requests(requested_members)
+
+    transfer = validate_member_transfer(
+        member_transfer, selected
+    )
+
     selected_hashes = {}
 
     entries = {}
@@ -1060,11 +1183,24 @@ def inspect_tar_stream(stream, *, requested_members=()):
                     f"Selected member is not regular: {name!r}"
                 )
 
+            if transfer is not None and name == transfer[0]:
+                _, expected_size, expected_digest, output = transfer
+
+                digest = transfer_member_payload(
+                    reader,
+                    member.size,
+                    expected_size=expected_size,
+                    expected_sha256=expected_digest,
+                    output=output,
+                )
+            else:
+                digest = hash_member_payload(
+                    reader, member.size
+                )
+
             selected_hashes[name] = {
                 "size": member.size,
-                "sha256": hash_member_payload(
-                    reader, member.size
-                ),
+                "sha256": digest,
             }
         else:
             consume_payload(reader, member.size)
@@ -1351,12 +1487,17 @@ def inspect_package(
     *,
     expected_sha256=None,
     requested_members=(),
+    member_transfer=None,
 ):
-    """Inspect a package and optionally hash selected regular members."""
+    """Inspect a package with optional provisional member streaming."""
 
     require_unprivileged()
 
     selected = validate_member_requests(requested_members)
+
+    transfer = validate_member_transfer(
+        member_transfer, selected
+    )
 
     if expected_sha256 is not None and (
         not isinstance(expected_sha256, str)
@@ -1445,7 +1586,13 @@ def inspect_package(
                 process.stdout,
                 deadline,
             ) as reader:
-                if selected:
+                if transfer is not None:
+                    result = inspect_tar_stream(
+                        reader,
+                        requested_members=tuple(sorted(selected)),
+                        member_transfer=transfer,
+                    )
+                elif selected:
                     result = inspect_tar_stream(
                         reader,
                         requested_members=tuple(sorted(selected)),
@@ -2049,6 +2196,206 @@ def read_checksum_manifest(path):
     return parse_checksum_manifest(data)
 
 
+def load_member_privilege_guard():
+    """Load the trusted sibling privilege guard without pycache use."""
+
+    guard_path = Path(__file__).resolve(
+        strict=True
+    ).with_name("candidate_privileges.py")
+
+    descriptor = os.open(
+        guard_path,
+        os.O_RDONLY
+        | os.O_NOFOLLOW
+        | os.O_NONBLOCK
+        | os.O_CLOEXEC,
+    )
+
+    try:
+        before = os.fstat(descriptor)
+
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != 0
+            or before.st_mode & 0o7022
+            or before.st_nlink != 1
+            or not 0 < before.st_size <= 64 * 1024
+        ):
+            raise ArchiveError(
+                "Untrusted member privilege guard"
+            )
+
+        data = bytearray()
+
+        while len(data) < before.st_size:
+            chunk = os.read(
+                descriptor,
+                before.st_size - len(data),
+            )
+
+            if not chunk:
+                raise ArchiveError(
+                    "Truncated member privilege guard"
+                )
+
+            data.extend(chunk)
+
+        if os.read(descriptor, 1):
+            raise ArchiveError(
+                "Member privilege guard grew during reading"
+            )
+
+        after = os.fstat(descriptor)
+
+        if archive_file_identity(before) != archive_file_identity(after):
+            raise ArchiveError(
+                "Member privilege guard changed during reading"
+            )
+
+    finally:
+        os.close(descriptor)
+
+    namespace = {
+        "__name__": "_candidate_member_privileges",
+        "__file__": str(guard_path),
+    }
+
+    exec(
+        compile(bytes(data), str(guard_path), "exec"),
+        namespace,
+    )
+
+    return namespace
+
+
+def stream_verified_member(
+    package,
+    *,
+    name,
+    version,
+    architecture,
+    archive_sha256,
+    member,
+    member_size,
+    member_sha256,
+    output,
+):
+    """Stream one previously family-validated regular member.
+
+    All expected values must originate from the protected
+    family-validation result, not candidate-controlled metadata.
+
+    The caller must establish protected archive and helper storage,
+    an outer process deadline, and a transactional output receiver.
+    A failed call invalidates every provisional output byte.
+    """
+
+    require_unprivileged()
+
+    guard = load_member_privilege_guard()
+
+    try:
+        guard["require_inspection_identity"]()
+    except guard["PrivilegeError"] as error:
+        raise ArchiveError(str(error)) from error
+
+    filename = validate_identity_values(
+        name,
+        version,
+        architecture,
+    )
+
+    raw_path = os.fspath(package)
+
+    if (
+        not isinstance(raw_path, str)
+        or not raw_path.startswith("/")
+        or raw_path.startswith("//")
+        or any(
+            part in {"", ".", ".."}
+            for part in raw_path[1:].split("/")
+        )
+    ):
+        raise ArchiveError(
+            "Unsafe member source archive path"
+        )
+
+    package = Path(raw_path)
+
+    if package.name != filename:
+        raise ArchiveError(
+            "Member source filename does not match expected identity"
+        )
+
+    if (
+        not isinstance(archive_sha256, str)
+        or PACKAGE_DIGEST.fullmatch(archive_sha256) is None
+    ):
+        raise ArchiveError(
+            "Invalid expected package digest"
+        )
+
+    requested = (member,)
+
+    transfer = (
+        member,
+        member_size,
+        member_sha256,
+        output,
+    )
+
+    selected = validate_member_requests(requested)
+
+    validate_member_transfer(
+        transfer,
+        selected,
+    )
+
+    if not callable(getattr(output, "flush", None)):
+        raise ArchiveError(
+            "Invalid member output flush operation"
+        )
+
+    inventory = inspect_package(
+        package,
+        expected_sha256=archive_sha256,
+        requested_members=requested,
+        member_transfer=transfer,
+    )
+
+    identity = validate_expected_identity(
+        inventory,
+        name=name,
+        version=version,
+        architecture=architecture,
+        expected_sha256=archive_sha256,
+    )
+
+    selected_results = validate_selected_member_results(
+        inventory,
+        requested,
+    )
+
+    expected = {
+        member: {
+            "size": member_size,
+            "sha256": member_sha256,
+        },
+    }
+
+    if selected_results != expected:
+        raise ArchiveError(
+            "Verified member result differs from expected identity"
+        )
+
+    output.flush()
+
+    return {
+        "identity": identity,
+        "selected_members": selected_results,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
@@ -2084,6 +2431,26 @@ def main():
         required=True,
     )
 
+    stream = commands.add_parser(
+        "stream-member",
+        help="Stream one previously validated regular member",
+        allow_abbrev=False,
+    )
+
+    stream.add_argument(
+        "--package",
+        dest="stream_package",
+        required=True,
+    )
+
+    stream.add_argument("--name", required=True)
+    stream.add_argument("--version", required=True)
+    stream.add_argument("--architecture", required=True)
+    stream.add_argument("--archive-sha256", required=True)
+    stream.add_argument("--member", required=True)
+    stream.add_argument("--member-size", type=int, required=True)
+    stream.add_argument("--member-sha256", required=True)
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -2094,11 +2461,28 @@ def main():
     elif args.package is not None:
         parser.error(
             "Diagnostic --package cannot be combined "
-            "with validate-family"
+            "with an archive subcommand"
         )
 
     try:
         require_unprivileged()
+
+        if args.command == "stream-member":
+            stream_verified_member(
+                args.stream_package,
+                name=args.name,
+                version=args.version,
+                architecture=args.architecture,
+                archive_sha256=args.archive_sha256,
+                member=args.member,
+                member_size=args.member_size,
+                member_sha256=args.member_sha256,
+                output=sys.stdout.buffer,
+            )
+
+            # This command must never emit inventory JSON or
+            # any other success text into its binary output.
+            return 0
 
         if args.command == "validate-family":
             registry = load_release_registry()
