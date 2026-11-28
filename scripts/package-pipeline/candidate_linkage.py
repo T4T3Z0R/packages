@@ -1,6 +1,8 @@
 """Static inspection of conventional x86-64 candidate executables."""
 
+import argparse
 import hashlib
+import json
 import os
 import re
 import resource
@@ -8,6 +10,7 @@ import stat
 import struct
 import subprocess
 import tempfile
+import sys
 
 from pathlib import Path
 
@@ -15,6 +18,13 @@ from pathlib import Path
 INTERPRETER = "/lib64/ld-linux-x86-64.so.2"
 
 MAX_ELF_BYTES = 128 * 1024**2
+
+EXPECTED_DIGEST = re.compile(
+    r"[0-9a-f]{64}",
+    re.ASCII,
+)
+
+MAX_GUARD_BYTES = 64 * 1024
 MAX_PROGRAM_HEADERS = 128
 MAX_SECTION_HEADERS = 256
 MAX_DYNAMIC_STRING_BYTES = 1024**2
@@ -953,7 +963,33 @@ def file_digest(stream):
     return result.hexdigest()
 
 
-def inspect_executable(path, *, privilege_guard):
+def validate_expected_executable(size, sha256):
+    """Validate an independently established member identity."""
+
+    if (
+        type(size) is not int
+        or not 0 < size <= MAX_ELF_BYTES
+    ):
+        raise LinkageError(
+            "Expected executable size outside policy"
+        )
+
+    if (
+        not isinstance(sha256, str)
+        or EXPECTED_DIGEST.fullmatch(sha256) is None
+    ):
+        raise LinkageError(
+            "Invalid expected executable digest"
+        )
+
+
+def inspect_executable(
+    path,
+    *,
+    privilege_guard,
+    expected_size=None,
+    expected_sha256=None,
+):
     """Inspect a protected candidate executable without executing it.
 
     The caller must supply the trusted privilege guard and establish
@@ -964,6 +1000,17 @@ def inspect_executable(path, *, privilege_guard):
     """
 
     privilege_guard()
+
+    bound = (
+        expected_size is not None
+        or expected_sha256 is not None
+    )
+
+    if bound:
+        validate_expected_executable(
+            expected_size,
+            expected_sha256,
+        )
 
     path = Path(validate_absolute_path(str(path)))
 
@@ -988,12 +1035,35 @@ def inspect_executable(path, *, privilege_guard):
             raise LinkageError(
                 "Candidate ELF file outside storage policy"
             )
+        if bound and (
+            before.st_size != expected_size
+            or stat.S_IMODE(before.st_mode) != 0o644
+        ):
+            raise LinkageError(
+                "Materialized executable size or mode mismatch"
+            )
+
     except BaseException:
         os.close(descriptor)
         raise
 
     with os.fdopen(descriptor, "rb") as stream:
         original_digest = file_digest(stream)
+
+        if (
+            bound
+            and original_digest != expected_sha256
+        ):
+            raise LinkageError(
+                "Materialized executable digest mismatch"
+            )
+
+        if file_identity(before) != file_identity(
+            os.fstat(stream.fileno())
+        ):
+            raise LinkageError(
+                "Candidate changed before ELF inspection"
+            )
 
         metadata = inspect_elf_metadata(stream)
 
@@ -1029,3 +1099,581 @@ def inspect_executable(path, *, privilege_guard):
         **metadata,
         **resolved,
     }
+
+def load_linkage_privilege_guard():
+    """Load the trusted adjacent guard directly from source.
+
+    The coordinator must establish protected helper ancestry
+    and dependency identities before launching this process.
+    No candidate-controlled Python module is imported here.
+    """
+
+    guard = Path(__file__).resolve().with_name(
+        "candidate_privileges.py"
+    )
+
+    descriptor = os.open(
+        guard,
+        os.O_RDONLY
+        | os.O_NOFOLLOW
+        | os.O_NONBLOCK
+        | os.O_CLOEXEC,
+    )
+
+    try:
+        before = os.fstat(descriptor)
+
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != 0
+            or before.st_mode & 0o7022
+            or before.st_nlink != 1
+            or not 0 < before.st_size <= MAX_GUARD_BYTES
+        ):
+            raise LinkageError(
+                "Protected linkage guard outside storage policy"
+            )
+
+        remaining = before.st_size
+        chunks = []
+
+        while remaining:
+            data = os.read(
+                descriptor,
+                min(remaining, MAX_GUARD_BYTES),
+            )
+
+            if not data:
+                raise LinkageError(
+                    "Truncated linkage privilege guard"
+                )
+
+            chunks.append(data)
+            remaining -= len(data)
+
+        if os.read(descriptor, 1):
+            raise LinkageError(
+                "Linkage privilege guard grew during read"
+            )
+
+        if (
+            file_identity(before)
+            != file_identity(os.fstat(descriptor))
+            or file_identity(before)
+            != file_identity(guard.lstat())
+        ):
+            raise LinkageError(
+                "Linkage privilege guard changed"
+            )
+
+    finally:
+        os.close(descriptor)
+
+    namespace = {
+        "__name__": "_candidate_linkage_privileges",
+        "__file__": str(guard),
+    }
+
+    exec(
+        compile(
+            b"".join(chunks),
+            str(guard),
+            "exec",
+        ),
+        namespace,
+    )
+
+    return namespace
+
+
+def inspect_verified_executable(
+    path,
+    *,
+    expected_size,
+    expected_sha256,
+):
+    """Inspect exact materialized bytes under restricted identity."""
+
+    if (
+        0 in os.getresuid()
+        or 0 in os.getresgid()
+    ):
+        raise LinkageError(
+            "Restricted linkage inspection refuses root identity"
+        )
+
+    validate_expected_executable(
+        expected_size,
+        expected_sha256,
+    )
+
+    guard = load_linkage_privilege_guard()
+
+    try:
+        return inspect_executable(
+            path,
+            privilege_guard=guard[
+                "require_inspection_identity"
+            ],
+            expected_size=expected_size,
+            expected_sha256=expected_sha256,
+        )
+
+    except guard["PrivilegeError"] as error:
+        raise LinkageError(str(error)) from error
+
+
+LINKAGE_RECEIPT_FIELDS = frozenset({
+    "schema",
+    "static_linkage_validation",
+    "sha256",
+    "architecture",
+    "interpreter",
+    "needed",
+    "program_headers",
+    "section_headers",
+    "dynamic_bytes",
+    "dynamic_string_bytes",
+    "interpreter_path",
+    "libraries",
+})
+
+
+def validate_receipt_runtime_path(value):
+    """Validate the syntax of an inspector-reported runtime path.
+
+    Runtime filesystem trust is established by the restricted
+    inspector. This function does not open candidate files or
+    repeat ELF parsing in the receiving process.
+    """
+
+    validate_absolute_path(value)
+
+    if not value.startswith("/usr/lib/"):
+        raise LinkageError(
+            "Linkage receipt runtime path outside policy"
+        )
+
+    return value
+
+
+def validate_linkage_receipt(
+    receipt,
+    *,
+    expected_size,
+    expected_sha256,
+):
+    """Validate decoded linkage evidence against trusted identity.
+
+    This validates the complete receipt schema and its member
+    binding. It does not authenticate an arbitrary producer.
+    The caller must establish trusted helper provenance, the
+    restricted process boundary and successful process cleanup.
+    """
+
+    validate_expected_executable(
+        expected_size,
+        expected_sha256,
+    )
+
+    if (
+        type(receipt) is not dict
+        or set(receipt) != LINKAGE_RECEIPT_FIELDS
+    ):
+        raise LinkageError(
+            "Unexpected linkage receipt fields"
+        )
+
+    if (
+        type(receipt["schema"]) is not int
+        or receipt["schema"] != 1
+        or receipt["static_linkage_validation"] is not True
+    ):
+        raise LinkageError(
+            "Invalid linkage receipt validation marker"
+        )
+
+    if receipt["sha256"] != expected_sha256:
+        raise LinkageError(
+            "Linkage receipt member digest mismatch"
+        )
+
+    if receipt["architecture"] != "x86_64":
+        raise LinkageError(
+            "Unexpected linkage receipt architecture"
+        )
+
+    if receipt["interpreter"] != INTERPRETER:
+        raise LinkageError(
+            "Unexpected linkage receipt interpreter"
+        )
+
+    limits = {
+        "program_headers": MAX_PROGRAM_HEADERS,
+        "section_headers": MAX_SECTION_HEADERS,
+        "dynamic_bytes": min(
+            MAX_DYNAMIC_BYTES,
+            expected_size,
+        ),
+        "dynamic_string_bytes": min(
+            MAX_DYNAMIC_STRING_BYTES,
+            expected_size,
+        ),
+    }
+
+    for name, limit in limits.items():
+        value = receipt[name]
+
+        if (
+            type(value) is not int
+            or not 0 < value <= limit
+        ):
+            raise LinkageError(
+                f"Linkage receipt {name} outside policy"
+            )
+
+    if receipt["dynamic_bytes"] % ELF64_DYNAMIC.size:
+        raise LinkageError(
+            "Unaligned linkage receipt dynamic segment"
+        )
+
+    if (
+        receipt["program_headers"] * ELF64_PROGRAM.size
+        > expected_size
+        or receipt["section_headers"] * ELF64_SECTION.size
+        > expected_size
+    ):
+        raise LinkageError(
+            "Linkage receipt header extent exceeds member size"
+        )
+
+    needed = receipt["needed"]
+
+    if (
+        type(needed) is not list
+        or not 0 < len(needed) <= MAX_DIRECT_DEPENDENCIES
+    ):
+        raise LinkageError(
+            "Linkage receipt direct dependencies outside policy"
+        )
+
+    for name in needed:
+        validate_library_name(name)
+
+    if len(set(needed)) != len(needed):
+        raise LinkageError(
+            "Duplicate linkage receipt direct dependency"
+        )
+
+    interpreter = validate_receipt_runtime_path(
+        receipt["interpreter_path"]
+    )
+
+    libraries = receipt["libraries"]
+
+    if (
+        type(libraries) is not dict
+        or not 0 < len(libraries) <= MAX_RESOLVED_LIBRARIES
+    ):
+        raise LinkageError(
+            "Linkage receipt resolved libraries outside policy"
+        )
+
+    verified = {}
+
+    for name, location in libraries.items():
+        validate_library_name(name)
+
+        verified[name] = validate_receipt_runtime_path(
+            location
+        )
+
+    if not set(needed) <= verified.keys():
+        raise LinkageError(
+            "Linkage receipt omitted direct dependencies"
+        )
+
+    return {
+        "schema": 1,
+        "static_linkage_validation": True,
+        "sha256": expected_sha256,
+        "architecture": "x86_64",
+        "interpreter": INTERPRETER,
+        "needed": list(needed),
+        "program_headers": receipt["program_headers"],
+        "section_headers": receipt["section_headers"],
+        "dynamic_bytes": receipt["dynamic_bytes"],
+        "dynamic_string_bytes":
+            receipt["dynamic_string_bytes"],
+        "interpreter_path": interpreter,
+        "libraries": dict(sorted(verified.items())),
+    }
+
+
+def build_family_linkage_requests(expected_names):
+    """Derive exact member requests from trusted package identities.
+
+    expected_names maps approved archive filenames to package names.
+    It must originate from the trusted release contract and protected
+    intake checksums, never from candidate-reported metadata.
+
+    Packages outside REQUIRED_EXECUTABLES receive no requests.
+    """
+
+    if type(expected_names) is not dict or not expected_names:
+        raise LinkageError(
+            "Invalid expected package identities"
+        )
+
+    requests = {}
+    seen_names = set()
+
+    for filename, name in expected_names.items():
+        if (
+            not isinstance(filename, str)
+            or not filename
+            or Path(filename).name != filename
+            or not filename.endswith(".pkg.tar.zst")
+            or not isinstance(name, str)
+            or not name
+        ):
+            raise LinkageError(
+                "Invalid expected archive identity"
+            )
+
+        if name in seen_names:
+            raise LinkageError(
+                "Duplicate expected package identity"
+            )
+
+        seen_names.add(name)
+
+    for filename, name in sorted(
+        expected_names.items()
+    ):
+        members = REQUIRED_EXECUTABLES.get(name)
+
+        if members is not None:
+            requests[filename] = tuple(
+                sorted(members)
+            )
+
+    return requests
+
+
+def bind_family_linkage_members(
+    archive_receipt,
+    *,
+    expected_names,
+    expected_checksums,
+    family,
+    version,
+    architecture,
+):
+    """Bind required executables to validated archive evidence.
+
+    The archive receipt must originate from a successfully
+    completed, restricted family inspection.
+
+    This function validates the linkage-relevant portion of
+    that receipt. It does not replace archive family validation
+    or authenticate an arbitrary receipt producer.
+    """
+
+    requests = build_family_linkage_requests(
+        expected_names
+    )
+
+    if (
+        type(expected_checksums) is not dict
+        or set(expected_checksums)
+            != set(expected_names)
+    ):
+        raise LinkageError(
+            "Expected archive checksum inventory mismatch"
+        )
+
+    for digest in expected_checksums.values():
+        if (
+            not isinstance(digest, str)
+            or EXPECTED_DIGEST.fullmatch(digest) is None
+        ):
+            raise LinkageError(
+                "Invalid expected archive checksum"
+            )
+
+    if (
+        type(archive_receipt) is not dict
+        or type(archive_receipt.get("schema")) is not int
+        or archive_receipt["schema"] != 1
+        or archive_receipt.get(
+            "structural_and_identity_validation"
+        ) is not True
+        or archive_receipt.get("family") != family
+        or archive_receipt.get("version") != version
+        or archive_receipt.get("architecture")
+            != architecture
+    ):
+        raise LinkageError(
+            "Archive family receipt identity mismatch"
+        )
+
+    packages = archive_receipt.get("packages")
+
+    if (
+        type(packages) is not dict
+        or set(packages)
+            != set(expected_names.values())
+    ):
+        raise LinkageError(
+            "Archive receipt package inventory mismatch"
+        )
+
+    plan = []
+
+    for filename, name in sorted(
+        expected_names.items()
+    ):
+        package = packages[name]
+
+        if type(package) is not dict:
+            raise LinkageError(
+                "Invalid archive package receipt"
+            )
+
+        expected_identity = {
+            "pkgname": name,
+            "pkgver": version,
+            "arch": architecture,
+            "filename": filename,
+            "sha256": expected_checksums[filename],
+        }
+
+        if package.get("identity") != expected_identity:
+            raise LinkageError(
+                "Archive package identity disagreement"
+            )
+
+        required = requests.get(filename, ())
+
+        if not required:
+            if "selected_members" in package:
+                raise LinkageError(
+                    "Unexpected selected archive members"
+                )
+
+            continue
+
+        if architecture != "x86_64":
+            raise LinkageError(
+                "Unsupported linkage inspection architecture"
+            )
+
+        selected = package.get("selected_members")
+        entries = package.get("entries")
+
+        if (
+            type(selected) is not dict
+            or set(selected) != set(required)
+            or type(entries) is not dict
+        ):
+            raise LinkageError(
+                "Required archive member inventory mismatch"
+            )
+
+        for member in required:
+            record = selected[member]
+            entry = entries.get(member)
+
+            if (
+                type(record) is not dict
+                or set(record) != {"size", "sha256"}
+                or type(entry) is not dict
+                or entry.get("type") != "file"
+                or type(entry.get("size")) is not int
+                or entry["size"] != record["size"]
+            ):
+                raise LinkageError(
+                    "Invalid required archive member record"
+                )
+
+            validate_expected_executable(
+                record["size"],
+                record["sha256"],
+            )
+
+            plan.append({
+                "name": name,
+                "version": version,
+                "architecture": architecture,
+                "filename": filename,
+                "archive_sha256":
+                    expected_checksums[filename],
+                "member": member,
+                "size": record["size"],
+                "sha256": record["sha256"],
+            })
+
+    return plan
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Restricted candidate ELF inspection"
+    )
+
+    parser.add_argument(
+        "--path",
+        required=True,
+    )
+
+    parser.add_argument(
+        "--expected-size",
+        required=True,
+        type=int,
+    )
+
+    parser.add_argument(
+        "--expected-sha256",
+        required=True,
+    )
+
+    arguments = parser.parse_args(argv)
+
+    try:
+        result = inspect_verified_executable(
+            arguments.path,
+            expected_size=arguments.expected_size,
+            expected_sha256=arguments.expected_sha256,
+        )
+
+        encoded = json.dumps(
+            result,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+
+        sys.stdout.write(encoded + "\n")
+        sys.stdout.flush()
+
+    except (
+        LinkageError,
+        OSError,
+        ValueError,
+        KeyError,
+        ImportError,
+        SyntaxError,
+    ) as error:
+        print(
+            f"Linkage inspection failed: {error}",
+            file=sys.stderr,
+        )
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

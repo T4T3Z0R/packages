@@ -619,5 +619,817 @@ class NativeMemberReceiverTests(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(
+    NATIVE_ENABLED,
+    "Requires disposable native Arch CI container",
+)
+class NativeCombinedFamilyTests(unittest.TestCase):
+
+    VERSION = "1.0-1"
+
+    @classmethod
+    def setUpClass(cls):
+        if (
+            os.getresuid() != (0, 0, 0)
+            or os.getresgid() != (0, 0, 0)
+        ):
+            raise RuntimeError(
+                "Native combined harness requires root"
+            )
+
+        if os.environ.get("GITHUB_ACTIONS") != "true":
+            raise RuntimeError(
+                "Native combined tests restricted to GitHub CI"
+            )
+
+        if not re.search(
+            r"^ID=arch$",
+            Path("/etc/os-release").read_text(),
+            re.MULTILINE,
+        ):
+            raise RuntimeError(
+                "Native combined tests require Arch Linux"
+            )
+
+        for tool in (
+            "python", "cc", "readelf", "lddtree",
+            "setpriv", "zstd", "bsdtar",
+            "setfacl", "getfacl",
+        ):
+            if shutil.which(tool) is None:
+                raise RuntimeError(
+                    f"Required native tool missing: {tool}"
+                )
+
+        account = pwd.getpwnam("nobody")
+
+        cls.uid = account.pw_uid
+        cls.gid = account.pw_gid
+
+        if cls.uid == 0 or cls.gid == 0:
+            raise RuntimeError(
+                "Invalid inspection account"
+            )
+
+        cls.receiver = load_module(
+            "_native_combined_receiver",
+            SCRIPTS / "candidate_member_receiver.py",
+        )
+
+        cls.archive = load_module(
+            "_native_combined_archive",
+            SCRIPTS / "candidate_archive.py",
+        )
+
+        cls.linkage = load_module(
+            "_native_combined_linkage",
+            SCRIPTS / "candidate_linkage.py",
+        )
+
+        cls.registry = load_module(
+            "_native_combined_registry",
+            SCRIPTS / "package_release_contract.py",
+        )
+
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory(
+            prefix="native-combined-family-",
+            dir="/var/lib",
+        )
+
+        self.addCleanup(scratch.cleanup)
+
+        self.root = Path(scratch.name)
+        self.root.chmod(0o755)
+
+        self.helpers = self.root / "helpers"
+        self.workspace = self.root / "workspace"
+        self.packages_dir = self.root / "packages"
+
+        for directory in (
+            self.helpers,
+            self.workspace,
+            self.packages_dir,
+        ):
+            directory.mkdir(mode=0o755)
+            directory.chmod(0o755)
+
+        for name in (
+            "candidate_archive.py",
+            "candidate_linkage.py",
+            "candidate_privileges.py",
+            "package_release_contract.py",
+        ):
+            original = SCRIPTS / name
+            target = self.helpers / name
+
+            shutil.copyfile(original, target)
+            target.chmod(0o644)
+
+            self.assertEqual(
+                digest(original.read_bytes()),
+                digest(target.read_bytes()),
+            )
+
+        self.archive_helper = (
+            self.helpers / "candidate_archive.py"
+        )
+
+        self.linkage_helper = (
+            self.helpers / "candidate_linkage.py"
+        )
+
+        self.manifest = self.root / "candidate-SHA256SUMS"
+
+        # Writable only by the inspection account. An ELF
+        # execution would leave evidence in this directory.
+        marker_area = self.root / "marker-area"
+
+        marker_area.mkdir(mode=0o700)
+
+        os.chown(
+            marker_area, self.uid, self.gid
+        )
+
+        marker_area.chmod(0o700)
+
+        self.marker = marker_area / "executed"
+
+        self.addCleanup(self.assert_not_executed)
+
+    def assert_not_executed(self):
+        self.assertFalse(
+            self.marker.exists(),
+            "Candidate executable was executed",
+        )
+
+    def native_run(self, arguments, **options):
+        defaults = {
+            "cwd": "/",
+            "env": ENVIRONMENT,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "timeout": 30,
+            "check": True,
+        }
+
+        defaults.update(options)
+
+        return subprocess.run(
+            arguments,
+            **defaults,
+        )
+
+    def compile_executable(self, index, *, bad=False):
+        import json
+
+        source = self.root / f"fixture-{index}.c"
+        binary = self.root / f"fixture-{index}"
+
+        source.write_text(
+            "#include <stdio.h>\n"
+            "int main(void) {\n"
+            f" FILE *f = fopen({json.dumps(str(self.marker))},"
+            ' "w");\n'
+            " if (f) fclose(f);\n"
+            f" return {index};\n"
+            "}\n",
+            encoding="ascii",
+        )
+
+        arguments = [
+            "/usr/bin/cc",
+            "-O0",
+            "-fPIE",
+            "-pie",
+        ]
+
+        if bad:
+            arguments.extend([
+                "-Wl,--enable-new-dtags",
+                "-Wl,-rpath,$ORIGIN",
+            ])
+
+        arguments.extend([
+            "-o", str(binary),
+            str(source),
+        ])
+
+        self.native_run(arguments)
+
+        binary.chmod(0o644)
+
+        metadata = self.native_run([
+            "/usr/bin/readelf",
+            "-h", "-l", "-d",
+            str(binary),
+        ]).stdout
+
+        self.assertIn(
+            b"libc.so.6", metadata
+        )
+
+        self.assertIn(
+            b"/lib64/ld-linux-x86-64.so.2",
+            metadata,
+        )
+
+        if bad:
+            self.assertIn(
+                b"RUNPATH", metadata
+            )
+        else:
+            self.assertNotIn(
+                b"RUNPATH", metadata
+            )
+
+        return binary.read_bytes()
+
+    def build_archive(
+        self,
+        name,
+        architecture,
+        members,
+    ):
+        import io
+        import tarfile
+
+        filename = (
+            f"{name}-{self.VERSION}-"
+            f"{architecture}.pkg.tar.zst"
+        )
+
+        path = self.packages_dir / filename
+
+        pkginfo = (
+            f"pkgname = {name}\n"
+            f"pkgbase = {name}\n"
+            f"pkgver = {self.VERSION}\n"
+            "pkgdesc = Native combined fixture\n"
+            "url = https://example.invalid\n"
+            "builddate = 1\n"
+            "packager = Native CI fixture\n"
+            f"size = {sum(map(len, members.values()))}\n"
+            f"arch = {architecture}\n"
+            "license = MIT\n"
+        ).encode("ascii")
+
+        buffer = io.BytesIO()
+
+        with tarfile.open(
+            fileobj=buffer,
+            mode="w",
+            format=tarfile.USTAR_FORMAT,
+        ) as tar:
+
+            def add(name, data=None, mode=0o644):
+                entry = tarfile.TarInfo(name)
+
+                entry.uid = 0
+                entry.gid = 0
+                entry.uname = "root"
+                entry.gname = "root"
+                entry.mtime = 1
+                entry.mode = mode
+
+                if data is None:
+                    entry.type = tarfile.DIRTYPE
+                    entry.size = 0
+
+                    tar.addfile(entry)
+                else:
+                    entry.size = len(data)
+
+                    tar.addfile(
+                        entry,
+                        io.BytesIO(data),
+                    )
+
+            add(".PKGINFO", pkginfo)
+
+            parents = {
+                parent.as_posix()
+                for member in members
+                for parent in Path(member).parents
+                if parent.as_posix() != "."
+            }
+
+            for parent in sorted(
+                parents,
+                key=lambda value: (
+                    value.count("/"),
+                    value,
+                ),
+            ):
+                add(parent, mode=0o755)
+
+            for member, payload in sorted(
+                members.items()
+            ):
+                add(
+                    member,
+                    payload,
+                    mode=0o755,
+                )
+
+        compressed = self.native_run(
+            ["/usr/bin/zstd", "-q", "-c"],
+            input=buffer.getvalue(),
+        ).stdout
+
+        path.write_bytes(compressed)
+        path.chmod(0o644)
+
+        # Independently confirm the selected archive bytes
+        # through native libarchive extraction.
+        for member, payload in members.items():
+            extracted = self.native_run([
+                "/usr/bin/bsdtar",
+                "-xOf",
+                str(path),
+                "--",
+                member,
+            ]).stdout
+
+            self.assertEqual(
+                extracted,
+                payload,
+            )
+
+        return filename, path
+
+    def prepare_family(
+        self,
+        family,
+        *,
+        missing=None,
+        malformed=None,
+        bad_linkage=None,
+    ):
+        self.family = family
+
+        contract = self.registry.output_contract(
+            family
+        )
+
+        self.architecture = contract.architecture
+
+        self.names = {}
+        self.packages = {}
+        self.checksums = {}
+        self.member_payloads = {}
+
+        for name in contract.required:
+            required = sorted(
+                self.linkage.REQUIRED_EXECUTABLES.get(
+                    name, ()
+                )
+            )
+
+            members = {}
+
+            if required:
+                for index, member in enumerate(
+                    required
+                ):
+                    if member == missing:
+                        continue
+
+                    if member == malformed:
+                        payload = b"not an ELF executable"
+                    else:
+                        payload = self.compile_executable(
+                            index,
+                            bad=(member == bad_linkage),
+                        )
+
+                    members[member] = payload
+
+                    self.member_payloads[
+                        (name, member)
+                    ] = payload
+
+            else:
+                members[
+                    f"usr/bin/{name}"
+                ] = b"non-ELF structural fixture\n"
+
+            if not members:
+                members[
+                    "usr/share/native-fixture"
+                ] = b"fixture\n"
+
+            filename, path = self.build_archive(
+                name,
+                contract.architecture,
+                members,
+            )
+
+            self.names[filename] = name
+            self.packages[filename] = str(path)
+
+            self.checksums[filename] = digest(
+                path.read_bytes()
+            )
+
+        self.registry.validate_output_names(
+            family,
+            self.names.values(),
+        )
+
+        self.assertEqual(
+            self.archive.expected_batch_names(
+                contract,
+                self.VERSION,
+                self.checksums,
+            ),
+            self.names,
+        )
+
+        self.manifest.write_text(
+            "".join(
+                f"{checksum}  {filename}\n"
+                for filename, checksum in sorted(
+                    self.checksums.items()
+                )
+            ),
+            encoding="ascii",
+        )
+
+        self.manifest.chmod(0o644)
+
+        self.assertEqual(
+            self.archive.read_checksum_manifest(
+                self.manifest
+            ),
+            self.checksums,
+        )
+
+    def validate(self, **overrides):
+        arguments = {
+            "uid": self.uid,
+            "gid": self.gid,
+            "archive_helper": self.archive_helper,
+            "linkage_helper": self.linkage_helper,
+            "family": self.family,
+            "version": self.VERSION,
+            "architecture": self.architecture,
+            "checksums": self.manifest,
+            "packages": self.packages,
+            "expected_names": self.names,
+            "expected_checksums": self.checksums,
+            "workspace": self.workspace,
+            "request_builder":
+                self.linkage.build_family_linkage_requests,
+            "evidence_binder":
+                self.linkage.bind_family_linkage_members,
+            "manifest_reader":
+                self.archive.read_checksum_manifest,
+            "receipt_validator":
+                self.linkage.validate_linkage_receipt,
+        }
+
+        arguments.update(overrides)
+
+        return self.receiver.validate_combined_family(
+            **arguments
+        )
+
+    def assert_workspace_empty(self):
+        self.assertEqual(
+            list(self.workspace.iterdir()),
+            [],
+        )
+
+        self.assert_not_executed()
+
+    def assert_success(self, result, count):
+        self.assertEqual(
+            result["family"], self.family
+        )
+
+        self.assertEqual(
+            result["version"], self.VERSION
+        )
+
+        self.assertIs(
+            result[
+                "structural_and_identity_validation"
+            ],
+            True,
+        )
+
+        self.assertEqual(
+            result["required_linkage_validation"],
+            {
+                "applicable": bool(count),
+                "required_member_count": count,
+                "validated_member_count": count,
+            },
+        )
+
+        evidence = result["linkage_members"]
+
+        self.assertEqual(len(evidence), count)
+
+        self.assertEqual(
+            {
+                (record["name"], record["member"])
+                for record in evidence
+            },
+            set(self.member_payloads),
+        )
+
+        for record in evidence:
+            payload = self.member_payloads[
+                (record["name"], record["member"])
+            ]
+
+            self.assertEqual(
+                record["size"], len(payload)
+            )
+
+            self.assertEqual(
+                record["sha256"],
+                digest(payload),
+            )
+
+            self.assertEqual(
+                record["archive_sha256"],
+                self.checksums[
+                    record["filename"]
+                ],
+            )
+
+            linkage = record["linkage"]
+
+            self.assertIs(
+                linkage["static_linkage_validation"],
+                True,
+            )
+
+            self.assertEqual(
+                linkage["sha256"],
+                digest(payload),
+            )
+
+            self.assertIn(
+                "libc.so.6",
+                linkage["needed"],
+            )
+
+        for filename, package in self.packages.items():
+            self.assertEqual(
+                digest(Path(package).read_bytes()),
+                self.checksums[filename],
+            )
+
+        self.assert_workspace_empty()
+
+    def assert_rejected(self, **overrides):
+        with self.assertRaises((
+            self.receiver.ReceiverError,
+            self.archive.ArchiveError,
+            self.linkage.LinkageError,
+            OSError,
+        )):
+            self.validate(**overrides)
+
+        self.assert_workspace_empty()
+
+    def test_native_complete_noctalia_family(self):
+        self.prepare_family("noctalia-custom")
+
+        self.assert_success(
+            self.validate(),
+            2,
+        )
+
+    def test_native_complete_greeter_family(self):
+        self.prepare_family(
+            "noctalia-greeter-t4t3z0r"
+        )
+
+        self.assert_success(
+            self.validate(),
+            3,
+        )
+
+    def test_native_unrelated_non_elf_family(self):
+        self.prepare_family("broot")
+
+        # An unrelated family must not require the
+        # linkage helper to exist.
+        self.linkage_helper.unlink()
+
+        self.assert_success(
+            self.validate(),
+            0,
+        )
+
+    def test_native_missing_required_member(self):
+        self.prepare_family(
+            "noctalia-custom",
+            missing="usr/bin/noctalia",
+        )
+
+        self.assert_rejected()
+
+    def test_native_malformed_required_elf(self):
+        self.prepare_family(
+            "noctalia-custom",
+            malformed="usr/bin/noctalia",
+        )
+
+        self.assert_rejected()
+
+    def test_native_later_linkage_failure(self):
+        from unittest.mock import patch
+
+        self.prepare_family(
+            "noctalia-greeter-t4t3z0r",
+            bad_linkage=(
+                "usr/bin/noctalia-greeter-compositor"
+            ),
+        )
+
+        accepted = []
+
+        real_inspector = (
+            self.receiver.inspect_materialized_member
+        )
+
+        def record_inspection(**arguments):
+            result = real_inspector(**arguments)
+
+            accepted.append(
+                result["sha256"]
+            )
+
+            return result
+
+        # Observe the actual inspector calls without
+        # replacing their execution or validation.
+        with patch.object(
+            self.receiver,
+            "inspect_materialized_member",
+            side_effect=record_inspection,
+        ):
+            self.assert_rejected()
+
+        self.assertEqual(
+            len(accepted),
+            2,
+        )
+
+    def test_native_manifest_disagreement(self):
+        self.prepare_family("broot")
+
+        self.manifest.write_text(
+            "".join(
+                f"{'0' * 64}  {filename}\n"
+                for filename in sorted(self.checksums)
+            ),
+            encoding="ascii",
+        )
+
+        self.assert_rejected()
+
+    def test_native_writable_manifest_rejected(self):
+        self.prepare_family("broot")
+
+        self.manifest.chmod(0o666)
+
+        self.assert_rejected()
+
+    def test_native_writable_archive_rejected(self):
+        self.prepare_family("broot")
+
+        package = Path(next(iter(
+            self.packages.values()
+        )))
+
+        package.chmod(0o666)
+
+        self.assert_rejected()
+
+    def test_native_writable_contract_rejected(self):
+        self.prepare_family("broot")
+
+        contract = (
+            self.helpers
+            / "package_release_contract.py"
+        )
+
+        contract.chmod(0o666)
+
+        self.assert_rejected()
+
+    def test_native_symlink_contract_rejected(self):
+        self.prepare_family("broot")
+
+        contract = (
+            self.helpers
+            / "package_release_contract.py"
+        )
+
+        original = contract.with_name(
+            "contract-original.py"
+        )
+
+        contract.rename(original)
+        contract.symlink_to(original.name)
+
+        self.assert_rejected()
+
+    def test_native_helper_bytecode_cache_rejected(self):
+        self.prepare_family("broot")
+
+        (
+            self.helpers / "__pycache__"
+        ).mkdir(mode=0o755)
+
+        self.assert_rejected()
+
+    def test_native_inspector_owned_contract_rejected(self):
+        self.prepare_family("broot")
+
+        os.chown(
+            self.helpers
+            / "package_release_contract.py",
+            self.uid,
+            self.gid,
+        )
+
+        self.assert_rejected()
+
+    def test_native_root_family_cli_rejected(self):
+        self.prepare_family("broot")
+
+        arguments = [
+            "/usr/bin/python",
+            "-I", "-B",
+            str(self.archive_helper),
+            "validate-family",
+            "--restricted-receipt",
+            "--family=" + self.family,
+            "--version=" + self.VERSION,
+            "--checksums=" + str(self.manifest),
+            *[
+                "--package=" + path
+                for path in self.packages.values()
+            ],
+        ]
+
+        result = self.native_run(
+            arguments,
+            check=False,
+        )
+
+        self.assertNotEqual(
+            result.returncode, 0
+        )
+
+        self.assertEqual(
+            result.stdout, b""
+        )
+
+        self.assertTrue(result.stderr)
+
+    def test_native_incomplete_family_privileges_rejected(self):
+        self.prepare_family("broot")
+
+        result = self.native_run(
+            [
+                "/usr/bin/python",
+                "-I", "-B",
+                str(self.archive_helper),
+                "validate-family",
+                "--restricted-receipt",
+                "--family=" + self.family,
+                "--version=" + self.VERSION,
+                "--checksums=" + str(self.manifest),
+                *[
+                    "--package=" + path
+                    for path in self.packages.values()
+                ],
+            ],
+            check=False,
+            user=self.uid,
+            group=self.gid,
+            extra_groups=[],
+        )
+
+        self.assertNotEqual(
+            result.returncode, 0
+        )
+
+        self.assertEqual(
+            result.stdout, b""
+        )
+
+        self.assertTrue(result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2986,5 +2986,540 @@ class VerifiedMemberReaderTests(unittest.TestCase):
         self.output.flush.assert_called_once_with()
 
 
+class FamilyMemberArgumentTests(unittest.TestCase):
+
+    FILENAME = "broot-1.0-1-x86_64.pkg.tar.zst"
+    DEBUG = "broot-debug-1.0-1-x86_64.pkg.tar.zst"
+
+    def expected_names(self):
+        return {
+            self.FILENAME: "broot",
+            self.DEBUG: "broot-debug",
+        }
+
+    def parse(self, arguments):
+        return archive.parse_family_member_arguments(
+            arguments,
+            self.expected_names(),
+        )
+
+    def test_no_member_arguments_preserves_default(self):
+        self.assertEqual(self.parse(None), {})
+        self.assertEqual(self.parse([]), {})
+
+    def test_exact_member_argument(self):
+        self.assertEqual(
+            self.parse([
+                [self.FILENAME, "usr/bin/broot"],
+            ]),
+            {
+                self.FILENAME: ("usr/bin/broot",),
+            },
+        )
+
+    def test_multiple_members_sorted_per_archive(self):
+        self.assertEqual(
+            self.parse([
+                [self.FILENAME, "usr/bin/z"],
+                [self.DEBUG, "usr/lib/debug/fixture"],
+                [self.FILENAME, "usr/bin/a"],
+            ]),
+            {
+                self.FILENAME: (
+                    "usr/bin/a",
+                    "usr/bin/z",
+                ),
+                self.DEBUG: (
+                    "usr/lib/debug/fixture",
+                ),
+            },
+        )
+
+    def test_duplicate_member_argument_rejected(self):
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Duplicate selected member argument",
+        ):
+            self.parse([
+                [self.FILENAME, "usr/bin/broot"],
+                [self.FILENAME, "usr/bin/broot"],
+            ])
+
+    def test_unexpected_archive_rejected(self):
+        for filename in (
+            "../" + self.FILENAME,
+            "unexpected.pkg.tar.zst",
+            "",
+            None,
+        ):
+            with self.subTest(filename=filename):
+                with self.assertRaisesRegex(
+                    archive.ArchiveError,
+                    "unexpected package",
+                ):
+                    self.parse([
+                        [filename, "usr/bin/broot"],
+                    ])
+
+    def test_invalid_argument_pairs_rejected(self):
+        for arguments in (
+            {},
+            "usr/bin/broot",
+            [None],
+            [[]],
+            [[self.FILENAME]],
+            [[self.FILENAME, "usr/bin/broot", "extra"]],
+            [[self.FILENAME, None]],
+        ):
+            with self.subTest(arguments=arguments):
+                with self.assertRaises(
+                    archive.ArchiveError
+                ):
+                    self.parse(arguments)
+
+    def test_existing_member_path_policy_enforced(self):
+        for member in (
+            "",
+            "/usr/bin/broot",
+            "../usr/bin/broot",
+            "usr/../bin/broot",
+            "usr//bin/broot",
+        ):
+            with self.subTest(member=member):
+                with self.assertRaises(
+                    archive.ArchiveError
+                ):
+                    self.parse([
+                        [self.FILENAME, member],
+                    ])
+
+    def test_family_cli_forwards_exact_requests(self):
+        arguments = [
+            "candidate_archive.py",
+            "validate-family",
+            "--family=broot",
+            "--version=1.0-1",
+            "--checksums=/protected/checksums",
+            "--package=/protected/" + self.FILENAME,
+            "--select-member",
+            self.FILENAME,
+            "usr/bin/broot",
+        ]
+
+        checksums = {
+            self.FILENAME: "a" * 64,
+        }
+
+        class Registry:
+            def output_contract(self, family):
+                return object()
+
+        registry = Registry()
+
+        import contextlib
+
+        with (
+            patch.object(sys, "argv", arguments),
+            patch.object(
+                archive, "require_unprivileged"
+            ),
+            patch.object(
+                archive,
+                "load_release_registry",
+                return_value=registry,
+            ),
+            patch.object(
+                archive,
+                "read_checksum_manifest",
+                return_value=checksums,
+            ),
+            patch.object(
+                archive,
+                "expected_batch_names",
+                return_value={
+                    self.FILENAME: "broot",
+                },
+            ),
+            patch.object(
+                archive,
+                "inspect_family",
+                return_value={"schema": 1},
+            ) as inspector,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(archive.main(), 0)
+
+        inspector.assert_called_once_with(
+            "broot",
+            "1.0-1",
+            ["/protected/" + self.FILENAME],
+            checksums,
+            registry=registry,
+            requested_members={
+                self.FILENAME: ("usr/bin/broot",),
+            },
+        )
+
+
+class RestrictedFamilyReceiptTests(unittest.TestCase):
+
+    def fixture(self):
+        return {
+            "schema": 1,
+            "family": "broot",
+            "version": "1.0-1",
+            "architecture": "x86_64",
+            "structural_and_identity_validation": True,
+            "packages": {
+                "broot": {
+                    "identity": {
+                        "pkgname": "broot",
+                        "pkgver": "1.0-1",
+                        "arch": "x86_64",
+                        "filename":
+                            "broot-1.0-1-x86_64.pkg.tar.zst",
+                        "sha256": "a" * 64,
+                    },
+                    "entries": {
+                        "usr/bin/broot": {
+                            "type": "file",
+                            "size": 4096,
+                        },
+                        "usr/share/doc/fixture": {
+                            "type": "file",
+                            "size": 1024,
+                        },
+                    },
+                    "selected_members": {
+                        "usr/bin/broot": {
+                            "size": 4096,
+                            "sha256": "b" * 64,
+                        },
+                    },
+                    "symbolic_links": {},
+                    "member_count": 2,
+                    "compressed_bytes": 1024,
+                    "expanded_bytes": 8192,
+                    "symlink_count": 0,
+                },
+            },
+        }
+
+    def test_compact_receipt_preserves_exact_member_evidence(self):
+        original = self.fixture()
+
+        result = archive.compact_family_receipt(
+            original
+        )
+
+        package = result["packages"]["broot"]
+
+        self.assertEqual(
+            set(package),
+            {"identity", "entries", "selected_members"},
+        )
+
+        self.assertEqual(
+            package["identity"],
+            original["packages"]["broot"]["identity"],
+        )
+
+        self.assertEqual(
+            package["selected_members"],
+            original["packages"]["broot"]["selected_members"],
+        )
+
+        self.assertEqual(
+            package["entries"],
+            {
+                "usr/bin/broot": {
+                    "type": "file",
+                    "size": 4096,
+                },
+            },
+        )
+
+        self.assertEqual(
+            len(original["packages"]["broot"]["entries"]),
+            2,
+        )
+
+    def test_unselected_package_preserves_only_identity(self):
+        original = self.fixture()
+
+        package = original["packages"]["broot"]
+
+        del package["selected_members"]
+
+        result = archive.compact_family_receipt(
+            original
+        )
+
+        self.assertEqual(
+            result["packages"]["broot"],
+            {"identity": package["identity"]},
+        )
+
+    def test_invalid_validation_marker_rejected(self):
+        for marker in (False, None, 1, "true"):
+            with self.subTest(marker=marker):
+                original = self.fixture()
+
+                original[
+                    "structural_and_identity_validation"
+                ] = marker
+
+                with self.assertRaises(
+                    archive.ArchiveError
+                ):
+                    archive.compact_family_receipt(
+                        original
+                    )
+
+    def test_invalid_selected_member_rejected(self):
+        for field, value in (
+            ("size", 4097),
+            ("size", True),
+            ("sha256", "invalid"),
+        ):
+            with self.subTest(field=field):
+                original = self.fixture()
+
+                original["packages"]["broot"][
+                    "selected_members"
+                ]["usr/bin/broot"][field] = value
+
+                with self.assertRaises(
+                    archive.ArchiveError
+                ):
+                    archive.compact_family_receipt(
+                        original
+                    )
+
+    def test_nonregular_selected_member_rejected(self):
+        original = self.fixture()
+
+        original["packages"]["broot"][
+            "entries"
+        ]["usr/bin/broot"]["type"] = "symlink"
+
+        with self.assertRaises(
+            archive.ArchiveError
+        ):
+            archive.compact_family_receipt(original)
+
+    def test_compact_json_receipt_framing(self):
+        import json
+
+        original = self.fixture()
+
+        encoded = (
+            archive.encode_restricted_family_receipt(
+                original
+            )
+        )
+
+        self.assertEqual(encoded.count("\n"), 1)
+        self.assertTrue(encoded.endswith("\n"))
+        self.assertNotIn("\r", encoded)
+
+        encoded.encode("ascii")
+
+        self.assertEqual(
+            json.loads(encoded),
+            archive.compact_family_receipt(original),
+        )
+
+    def test_receipt_size_limit(self):
+        original = self.fixture()
+
+        with patch.object(
+            archive,
+            "MAX_RESTRICTED_FAMILY_RECEIPT_BYTES",
+            10,
+        ):
+            with self.assertRaisesRegex(
+                archive.ArchiveError,
+                "receipt exceeds size policy",
+            ):
+                archive.encode_restricted_family_receipt(
+                    original
+                )
+
+    def test_restricted_identity_calls_complete_guard(self):
+        calls = []
+
+        def unprivileged():
+            calls.append("unprivileged")
+
+        def guard():
+            calls.append("complete-guard")
+
+        class PrivilegeError(RuntimeError):
+            pass
+
+        with (
+            patch.object(
+                archive,
+                "require_unprivileged",
+                side_effect=unprivileged,
+            ),
+            patch.object(
+                archive,
+                "load_member_privilege_guard",
+                return_value={
+                    "require_inspection_identity": guard,
+                    "PrivilegeError": PrivilegeError,
+                },
+            ),
+        ):
+            archive.require_restricted_family_identity()
+
+        self.assertEqual(
+            calls,
+            ["unprivileged", "complete-guard"],
+        )
+
+    def test_incomplete_privilege_identity_rejected(self):
+        class PrivilegeError(RuntimeError):
+            pass
+
+        def reject():
+            raise PrivilegeError(
+                "Synthetic incomplete privilege identity"
+            )
+
+        with (
+            patch.object(
+                archive,
+                "require_unprivileged",
+            ),
+            patch.object(
+                archive,
+                "load_member_privilege_guard",
+                return_value={
+                    "require_inspection_identity": reject,
+                    "PrivilegeError": PrivilegeError,
+                },
+            ),
+        ):
+            with self.assertRaisesRegex(
+                archive.ArchiveError,
+                "Synthetic incomplete privilege identity",
+            ):
+                archive.require_restricted_family_identity()
+
+    def cli_arguments(self):
+        return [
+            "candidate_archive.py",
+            "validate-family",
+            "--family=broot",
+            "--version=1.0-1",
+            "--checksums=/protected/checksums",
+            "--package=/protected/broot-1.0-1-x86_64.pkg.tar.zst",
+            "--restricted-receipt",
+        ]
+
+    def test_cli_guard_failure_prevents_archive_inspection(self):
+        import contextlib
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with (
+            patch.object(
+                sys, "argv", self.cli_arguments()
+            ),
+            patch.object(
+                archive, "require_unprivileged"
+            ),
+            patch.object(
+                archive,
+                "require_restricted_family_identity",
+                side_effect=archive.ArchiveError(
+                    "Synthetic restricted identity failure"
+                ),
+            ),
+            patch.object(
+                archive,
+                "load_release_registry",
+            ) as registry,
+            patch.object(
+                archive,
+                "inspect_family",
+            ) as inspector,
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            self.assertEqual(archive.main(), 1)
+
+        registry.assert_not_called()
+        inspector.assert_not_called()
+
+        self.assertEqual(stdout.getvalue(), "")
+
+        self.assertIn(
+            "Synthetic restricted identity failure",
+            stderr.getvalue(),
+        )
+
+    def test_cli_emits_compact_receipt_after_inspection(self):
+        import contextlib
+        import json
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        original = self.fixture()
+
+        with (
+            patch.object(
+                sys, "argv", self.cli_arguments()
+            ),
+            patch.object(
+                archive, "require_unprivileged"
+            ),
+            patch.object(
+                archive,
+                "require_restricted_family_identity",
+            ) as guard,
+            patch.object(
+                archive,
+                "load_release_registry",
+            ),
+            patch.object(
+                archive,
+                "read_checksum_manifest",
+                return_value={
+                    "broot-1.0-1-x86_64.pkg.tar.zst":
+                        "a" * 64,
+                },
+            ),
+            patch.object(
+                archive,
+                "inspect_family",
+                return_value=original,
+            ) as inspector,
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            self.assertEqual(archive.main(), 0)
+
+        guard.assert_called_once_with()
+        inspector.assert_called_once()
+
+        self.assertEqual(stderr.getvalue(), "")
+
+        self.assertEqual(
+            stdout.getvalue().count("\n"),
+            1,
+        )
+
+        self.assertEqual(
+            json.loads(stdout.getvalue()),
+            archive.compact_family_receipt(original),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2396,6 +2396,181 @@ def stream_verified_member(
     }
 
 
+def parse_family_member_arguments(arguments, expected_names):
+    """Normalize explicit CLI requests using existing archive policy."""
+
+    if arguments is None:
+        return {}
+
+    if not isinstance(arguments, (list, tuple)):
+        raise ArchiveError(
+            "Invalid family member argument collection"
+        )
+
+    requests = {}
+
+    for pair in arguments:
+        if (
+            not isinstance(pair, (list, tuple))
+            or len(pair) != 2
+        ):
+            raise ArchiveError(
+                "Invalid family member argument pair"
+            )
+
+        filename, member = pair
+
+        if (
+            not isinstance(filename, str)
+            or filename not in expected_names
+        ):
+            raise ArchiveError(
+                "Member request references unexpected package"
+            )
+
+        if not isinstance(member, str):
+            raise ArchiveError(
+                "Invalid selected member argument"
+            )
+
+        members = requests.setdefault(filename, [])
+
+        if member in members:
+            raise ArchiveError(
+                "Duplicate selected member argument"
+            )
+
+        members.append(member)
+
+    return validate_family_member_requests(
+        requests,
+        expected_names,
+    )
+
+
+MAX_RESTRICTED_FAMILY_RECEIPT_BYTES = 1024**2
+
+
+def require_restricted_family_identity():
+    """Apply the complete restricted inspection identity policy."""
+
+    require_unprivileged()
+
+    guard = load_member_privilege_guard()
+
+    try:
+        guard["require_inspection_identity"]()
+    except guard["PrivilegeError"] as error:
+        raise ArchiveError(str(error)) from error
+
+
+def compact_family_receipt(result):
+    """Project validated family evidence into a bounded receipt.
+
+    The input must be the result of successful inspect_family().
+    No candidate inventory is accepted directly by this function.
+    """
+
+    if (
+        type(result) is not dict
+        or type(result.get("schema")) is not int
+        or result["schema"] != 1
+        or result.get(
+            "structural_and_identity_validation"
+        ) is not True
+        or type(result.get("packages")) is not dict
+        or not result["packages"]
+    ):
+        raise ArchiveError(
+            "Invalid validated family result"
+        )
+
+    packages = {}
+
+    for name, package in sorted(
+        result["packages"].items()
+    ):
+        compact = {
+            "identity": dict(package["identity"]),
+        }
+
+        selected = package.get("selected_members")
+
+        if selected:
+            compact["selected_members"] = {}
+            compact["entries"] = {}
+
+            for member, record in sorted(
+                selected.items()
+            ):
+                entry = package["entries"][member]
+
+                if (
+                    type(record) is not dict
+                    or set(record) != {"size", "sha256"}
+                    or entry.get("type") != "file"
+                    or type(entry.get("size")) is not int
+                    or type(record["size"]) is not int
+                    or entry["size"] != record["size"]
+                    or not 0 < record["size"]
+                        <= MAX_MATERIALIZED_MEMBER_BYTES
+                    or not isinstance(
+                        record["sha256"], str
+                    )
+                    or PACKAGE_DIGEST.fullmatch(
+                        record["sha256"]
+                    ) is None
+                ):
+                    raise ArchiveError(
+                        "Invalid validated selected member"
+                    )
+
+                compact["selected_members"][member] = {
+                    "size": record["size"],
+                    "sha256": record["sha256"],
+                }
+
+                compact["entries"][member] = {
+                    "type": "file",
+                    "size": entry["size"],
+                }
+
+        packages[name] = compact
+
+    return {
+        "schema": 1,
+        "family": result["family"],
+        "version": result["version"],
+        "architecture": result["architecture"],
+        "structural_and_identity_validation": True,
+        "packages": packages,
+    }
+
+
+def encode_restricted_family_receipt(result):
+    """Serialize compact family evidence before emitting any bytes."""
+
+    receipt = compact_family_receipt(result)
+
+    encoded = json.dumps(
+        receipt,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ) + "\n"
+
+    if (
+        len(encoded.encode("ascii"))
+        > MAX_RESTRICTED_FAMILY_RECEIPT_BYTES
+    ):
+        raise ArchiveError(
+            "Restricted family receipt exceeds size policy"
+        )
+
+    return encoded
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
@@ -2429,6 +2604,27 @@ def main():
         dest="packages",
         action="append",
         required=True,
+    )
+
+    family.add_argument(
+        "--select-member",
+        dest="selected_members",
+        action="append",
+        nargs=2,
+        metavar=("FILENAME", "MEMBER"),
+        help=(
+            "Hash an exact regular archive member; "
+            "repeat for each required member"
+        ),
+    )
+
+    family.add_argument(
+        "--restricted-receipt",
+        action="store_true",
+        help=(
+            "Require the full restricted inspection identity "
+            "and emit compact family coordination evidence"
+        ),
     )
 
     stream = commands.add_parser(
@@ -2485,33 +2681,76 @@ def main():
             return 0
 
         if args.command == "validate-family":
+            if args.restricted_receipt:
+                require_restricted_family_identity()
+
             registry = load_release_registry()
 
             checksums = read_checksum_manifest(
                 args.checksums
             )
 
-            result = inspect_family(
-                args.family,
-                args.version,
-                args.packages,
-                checksums,
-                registry=registry,
-            )
+            if args.selected_members is None:
+                result = inspect_family(
+                    args.family,
+                    args.version,
+                    args.packages,
+                    checksums,
+                    registry=registry,
+                )
+            else:
+                try:
+                    contract = registry.output_contract(
+                        args.family
+                    )
+                except ValueError as error:
+                    raise ArchiveError(str(error)) from error
+
+                expected_names = expected_batch_names(
+                    contract,
+                    args.version,
+                    checksums,
+                )
+
+                requests = parse_family_member_arguments(
+                    args.selected_members,
+                    expected_names,
+                )
+
+                result = inspect_family(
+                    args.family,
+                    args.version,
+                    args.packages,
+                    checksums,
+                    registry=registry,
+                    requested_members=requests,
+                )
         else:
             result = inspect_package(
                 args.package
             )
 
-        json.dump(
-            result,
-            sys.stdout,
-            ensure_ascii=True,
-            indent=2,
-            sort_keys=True,
-        )
+        if (
+            args.command == "validate-family"
+            and args.restricted_receipt
+        ):
+            encoded = encode_restricted_family_receipt(
+                result
+            )
 
-        sys.stdout.write("\n")
+            sys.stdout.write(encoded)
+            sys.stdout.flush()
+
+        else:
+            json.dump(
+                result,
+                sys.stdout,
+                ensure_ascii=True,
+                indent=2,
+                sort_keys=True,
+            )
+
+            sys.stdout.write("\n")
 
     except (
         ArchiveError,

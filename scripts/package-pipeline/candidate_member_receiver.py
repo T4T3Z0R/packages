@@ -7,6 +7,7 @@ results. Candidate bytes are never executed by this module.
 
 import errno
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -25,6 +26,10 @@ CHUNK_BYTES = 1024**2
 
 TRANSFER_TIMEOUT = 360
 CLEANUP_TIMEOUT = 30
+
+LINKAGE_TIMEOUT = 90
+MAX_LINKAGE_RECEIPT_BYTES = 1024**2
+MAX_LINKAGE_JSON_DEPTH = 8
 
 SETPRIV = "/usr/bin/setpriv"
 PYTHON = "/usr/bin/python"
@@ -659,6 +664,69 @@ def create_provisional_member(directory):
         raise
 
 
+def protected_helper_identities(helper, dependencies):
+    """Establish identities for a protected helper and its dependencies.
+
+    The helper directory must contain trusted source files and no
+    Python bytecode cache directory. The caller must exclusively
+    control provisioning of this directory.
+    """
+
+    helper = validate_absolute_path(helper)
+    parent = Path(helper).parent
+
+    directory = open_protected_directory(parent)
+
+    try:
+        try:
+            os.stat(
+                "__pycache__",
+                dir_fd=directory,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise ReceiverError(
+                "Protected helper bytecode cache is forbidden"
+            )
+
+        paths = [helper]
+
+        for name in dependencies:
+            if (
+                not isinstance(name, str)
+                or Path(name).name != name
+                or not name.endswith(".py")
+                or name.startswith(".")
+            ):
+                raise ReceiverError(
+                    "Invalid protected helper dependency"
+                )
+
+            paths.append(str(parent / name))
+
+        if len(set(paths)) != len(paths):
+            raise ReceiverError(
+                "Duplicate protected helper dependency"
+            )
+
+        identities = {
+            path: protected_file_identity(path)
+            for path in paths
+        }
+
+        verify_directory_identity(
+            parent,
+            directory,
+        )
+
+        return identities
+
+    finally:
+        os.close(directory)
+
+
 def materialize_verified_member(
     *,
     uid,
@@ -743,16 +811,19 @@ def materialize_verified_member(
         ],
     )
 
-    guard = str(
-        Path(helper).with_name(
-            "candidate_privileges.py"
-        )
+    dependencies = (
+        "candidate_privileges.py",
+        "package_release_contract.py",
     )
 
-    protected_inputs = {
-        path: protected_file_identity(path)
-        for path in (helper, guard, package)
-    }
+    protected_helpers = protected_helper_identities(
+        helper,
+        dependencies,
+    )
+
+    protected_package = protected_file_identity(
+        package
+    )
 
     directory = open_protected_directory(destination)
 
@@ -823,13 +894,18 @@ def materialize_verified_member(
                     "Member transfer verification disagreement"
                 )
 
-            for input_path, identity in protected_inputs.items():
-                if protected_file_identity(
-                    input_path
-                ) != identity:
-                    raise ReceiverError(
-                        "Protected reader input changed"
-                    )
+            if (
+                protected_helper_identities(
+                    helper,
+                    dependencies,
+                ) != protected_helpers
+                or protected_file_identity(
+                    package
+                ) != protected_package
+            ):
+                raise ReceiverError(
+                    "Protected reader input changed"
+                )
 
             verify_directory_identity(
                 destination,
@@ -954,3 +1030,1429 @@ def materialize_verified_member(
                         )
                 finally:
                     os.close(directory)
+
+def restricted_linkage_command(
+    uid,
+    gid,
+    helper,
+    executable,
+    expected_size,
+    expected_sha256,
+):
+    """Construct the restricted, identity-bound ELF inspector command."""
+
+    validate_inspection_account(uid, gid)
+
+    helper = validate_absolute_path(helper)
+    executable = validate_absolute_path(executable)
+
+    validate_expected_member(
+        expected_size,
+        expected_sha256,
+    )
+
+    if Path(helper).name != "candidate_linkage.py":
+        raise ReceiverError(
+            "Unexpected linkage helper name"
+        )
+
+    return [
+        SETPRIV,
+        f"--reuid={uid}",
+        f"--regid={gid}",
+        "--clear-groups",
+        "--inh-caps=-all",
+        "--ambient-caps=-all",
+        "--bounding-set=-all",
+        "--no-new-privs",
+        PYTHON,
+        "-I",
+        "-B",
+        helper,
+        "--path=" + executable,
+        "--expected-size=" + str(expected_size),
+        "--expected-sha256=" + expected_sha256,
+    ]
+
+
+def receive_linkage_receipt(process, *, deadline):
+    """Receive bounded provisional JSON bytes from a restricted reader.
+
+    The caller exclusively owns the process lifecycle and must
+    stop its dedicated process group before accepting any result.
+    """
+
+    output = bytearray()
+    diagnostic_size = 0
+
+    with selectors.DefaultSelector() as selector:
+        selector.register(
+            process.stdout,
+            selectors.EVENT_READ,
+            "receipt",
+        )
+
+        selector.register(
+            process.stderr,
+            selectors.EVENT_READ,
+            "diagnostics",
+        )
+
+        while selector.get_map():
+            events = selector.select(
+                remaining_time(deadline)
+            )
+
+            if not events:
+                raise ReceiverError(
+                    "Linkage receipt deadline exceeded"
+                )
+
+            for key, _ in events:
+                remaining_time(deadline)
+
+                if key.data == "receipt":
+                    limit = min(
+                        CHUNK_BYTES,
+                        MAX_LINKAGE_RECEIPT_BYTES
+                        - len(output) + 1,
+                    )
+                else:
+                    limit = min(
+                        CHUNK_BYTES,
+                        MAX_DIAGNOSTIC_BYTES
+                        - diagnostic_size + 1,
+                    )
+
+                data = os.read(key.fd, limit)
+
+                if not data:
+                    selector.unregister(key.fileobj)
+                    continue
+
+                if key.data == "diagnostics":
+                    diagnostic_size += len(data)
+
+                    if (
+                        diagnostic_size
+                        > MAX_DIAGNOSTIC_BYTES
+                    ):
+                        raise ReceiverError(
+                            "Linkage diagnostics exceed policy"
+                        )
+
+                    continue
+
+                if (
+                    len(output) + len(data)
+                    > MAX_LINKAGE_RECEIPT_BYTES
+                ):
+                    raise ReceiverError(
+                        "Linkage receipt exceeds size policy"
+                    )
+
+                output.extend(data)
+
+    status = observe_reader_exit(
+        process,
+        deadline,
+    )
+
+    if status != 0:
+        raise ReceiverError(
+            f"Restricted linkage inspector failed: {status}"
+        )
+
+    if diagnostic_size:
+        raise ReceiverError(
+            "Unexpected linkage inspector diagnostics"
+        )
+
+    if not output:
+        raise ReceiverError(
+            "Empty linkage inspection receipt"
+        )
+
+    remaining_time(deadline)
+
+    return bytes(output)
+
+
+def reject_duplicate_json_keys(pairs):
+    result = {}
+
+    for name, value in pairs:
+        if name in result:
+            raise ReceiverError(
+                "Duplicate linkage receipt field"
+            )
+
+        result[name] = value
+
+    return result
+
+
+def reject_json_constant(value):
+    raise ReceiverError(
+        "Nonstandard linkage JSON constant"
+    )
+
+
+def reject_json_float(value):
+    raise ReceiverError(
+        "Floating-point linkage JSON value"
+    )
+
+
+def parse_bounded_json_integer(value):
+    if len(value) > 20:
+        raise ReceiverError(
+            "Linkage JSON integer exceeds policy"
+        )
+
+    return int(value)
+
+
+def validate_linkage_json_depth(data):
+    """Bound JSON nesting before invoking the decoder."""
+
+    depth = 0
+    quoted = False
+    escaped = False
+
+    for value in data:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif value == 92:
+                escaped = True
+            elif value == 34:
+                quoted = False
+
+            continue
+
+        if value == 34:
+            quoted = True
+
+        elif value in (123, 91):
+            depth += 1
+
+            if depth > MAX_LINKAGE_JSON_DEPTH:
+                raise ReceiverError(
+                    "Linkage JSON nesting exceeds policy"
+                )
+
+        elif value in (125, 93):
+            depth -= 1
+
+            if depth < 0:
+                raise ReceiverError(
+                    "Invalid linkage JSON nesting"
+                )
+
+    if depth != 0 or quoted or escaped:
+        raise ReceiverError(
+            "Incomplete linkage JSON structure"
+        )
+
+
+def decode_linkage_receipt(data):
+    """Decode a bounded receipt without accepting ambiguous JSON.
+
+    This is a transport decoder, not the final linkage evidence
+    schema validator. A decoded result is not acceptance evidence.
+    """
+
+    if (
+        not isinstance(data, bytes)
+        or not 0 < len(data) <= MAX_LINKAGE_RECEIPT_BYTES
+    ):
+        raise ReceiverError(
+            "Linkage receipt outside size policy"
+        )
+
+    if (
+        not data.endswith(b"\n")
+        or data.count(b"\n") != 1
+        or b"\r" in data
+    ):
+        raise ReceiverError(
+            "Unexpected linkage receipt framing"
+        )
+
+    validate_linkage_json_depth(data)
+
+    try:
+        result = json.loads(
+            data.decode("ascii", errors="strict"),
+            object_pairs_hook=reject_duplicate_json_keys,
+            parse_constant=reject_json_constant,
+            parse_float=reject_json_float,
+            parse_int=parse_bounded_json_integer,
+        )
+
+    except (ValueError, RecursionError) as error:
+        raise ReceiverError(
+            "Invalid linkage JSON receipt"
+        ) from error
+
+    if not isinstance(result, dict):
+        raise ReceiverError(
+            "Linkage receipt must be a JSON object"
+        )
+
+    return result
+
+def verify_materialized_identity(
+    path,
+    *,
+    expected_size,
+    expected_sha256,
+    deadline,
+):
+    """Verify protected materialized bytes without interpreting ELF."""
+
+    path = validate_absolute_path(path)
+
+    validate_expected_member(
+        expected_size,
+        expected_sha256,
+    )
+
+    parent = Path(path).parent
+
+    directory = open_protected_directory(parent)
+
+    try:
+        descriptor = os.open(
+            Path(path).name,
+            FILE_FLAGS,
+            dir_fd=directory,
+        )
+
+        try:
+            before = os.fstat(descriptor)
+
+            validate_protected_file(before)
+
+            if (
+                stat.S_IMODE(before.st_mode) != 0o644
+                or before.st_size != expected_size
+            ):
+                raise ReceiverError(
+                    "Materialized linkage input size or mode mismatch"
+                )
+
+            digest = hashlib.sha256()
+            total = 0
+
+            while total < expected_size:
+                remaining_time(deadline)
+
+                data = os.read(
+                    descriptor,
+                    min(
+                        CHUNK_BYTES,
+                        expected_size - total,
+                    ),
+                )
+
+                if not data:
+                    raise ReceiverError(
+                        "Truncated materialized linkage input"
+                    )
+
+                total += len(data)
+                digest.update(data)
+
+            if os.read(descriptor, 1):
+                raise ReceiverError(
+                    "Materialized linkage input grew"
+                )
+
+            if (
+                total != expected_size
+                or digest.hexdigest() != expected_sha256
+            ):
+                raise ReceiverError(
+                    "Materialized linkage input digest mismatch"
+                )
+
+            current = os.stat(
+                Path(path).name,
+                dir_fd=directory,
+                follow_symlinks=False,
+            )
+
+            identity = file_identity(before)
+
+            if (
+                file_identity(os.fstat(descriptor))
+                != identity
+                or file_identity(current) != identity
+            ):
+                raise ReceiverError(
+                    "Materialized linkage input changed"
+                )
+
+            verify_directory_identity(
+                parent,
+                directory,
+            )
+
+            remaining_time(deadline)
+
+            return identity
+
+        finally:
+            os.close(descriptor)
+
+    finally:
+        os.close(directory)
+
+
+def inspect_materialized_member(
+    *,
+    uid,
+    gid,
+    helper,
+    executable,
+    expected_size,
+    expected_sha256,
+    receipt_validator,
+):
+    """Collect identity-bound evidence from the restricted inspector.
+
+    The validator must be supplied by trusted pipeline code.
+    This function accepts neither an arbitrary command nor
+    candidate-supplied validation logic.
+
+    The caller must provision and exclusively control the
+    protected helper and materialized member directories.
+    """
+
+    require_root()
+
+    if not callable(receipt_validator):
+        raise ReceiverError(
+            "Trusted linkage receipt validator required"
+        )
+
+    helper = validate_absolute_path(helper)
+    executable = validate_absolute_path(executable)
+
+    command = restricted_linkage_command(
+        uid,
+        gid,
+        helper,
+        executable,
+        expected_size,
+        expected_sha256,
+    )
+
+    dependencies = (
+        "candidate_privileges.py",
+    )
+
+    deadline = (
+        time.monotonic() + LINKAGE_TIMEOUT
+    )
+
+    protected_helpers = protected_helper_identities(
+        helper,
+        dependencies,
+    )
+
+    protected_executable = verify_materialized_identity(
+        executable,
+        expected_size=expected_size,
+        expected_sha256=expected_sha256,
+        deadline=deadline,
+    )
+
+    remaining_time(deadline)
+
+    process = subprocess.Popen(
+        command,
+        cwd="/",
+        env=ENVIRONMENT,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+        close_fds=True,
+    )
+
+    try:
+        data = receive_linkage_receipt(
+            process,
+            deadline=deadline,
+        )
+
+    finally:
+        stop_process_group(process)
+
+    if process.returncode != 0:
+        raise ReceiverError(
+            "Linkage inspector did not terminate successfully"
+        )
+
+    remaining_time(deadline)
+
+    if protected_helper_identities(
+        helper,
+        dependencies,
+    ) != protected_helpers:
+        raise ReceiverError(
+            "Protected linkage helper changed"
+        )
+
+    if verify_materialized_identity(
+        executable,
+        expected_size=expected_size,
+        expected_sha256=expected_sha256,
+        deadline=deadline,
+    ) != protected_executable:
+        raise ReceiverError(
+            "Protected linkage input changed"
+        )
+
+    receipt = decode_linkage_receipt(data)
+
+    result = receipt_validator(
+        receipt,
+        expected_size=expected_size,
+        expected_sha256=expected_sha256,
+    )
+
+    if (
+        type(result) is not dict
+        or type(result.get("schema")) is not int
+        or result["schema"] != 1
+        or result.get("static_linkage_validation")
+            is not True
+        or result.get("sha256") != expected_sha256
+    ):
+        raise ReceiverError(
+            "Validated linkage receipt identity disagreement"
+        )
+
+    remaining_time(deadline)
+
+    return result
+
+MAX_FAMILY_ARCHIVES = 64
+MAX_FAMILY_REQUESTS = 64
+MAX_FAMILY_MANIFEST_BYTES = 16 * 1024
+FAMILY_ARCHIVE_TIMEOUT = 360
+
+
+def restricted_family_command(
+    *,
+    uid,
+    gid,
+    helper,
+    family,
+    version,
+    checksums,
+    packages,
+    requests,
+):
+    """Construct the exact restricted family inspection command.
+
+    Package identities and member selection must originate from
+    trusted release policy, not from candidate-reported evidence.
+    """
+
+    for value in (family, version):
+        if (
+            not isinstance(value, str)
+            or not 0 < len(value) <= 255
+            or re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.+:-]*",
+                value,
+                re.ASCII,
+            ) is None
+        ):
+            raise ReceiverError(
+                "Invalid expected family identity"
+            )
+
+    checksums = validate_absolute_path(checksums)
+
+    if (
+        type(packages) is not dict
+        or not 0 < len(packages) <= MAX_FAMILY_ARCHIVES
+    ):
+        raise ReceiverError(
+            "Family package inventory outside policy"
+        )
+
+    normalized = {}
+
+    for filename, package in packages.items():
+        package = validate_absolute_path(package)
+
+        if (
+            not isinstance(filename, str)
+            or Path(package).name != filename
+            or not filename.endswith(".pkg.tar.zst")
+            or filename.startswith("-")
+        ):
+            raise ReceiverError(
+                "Invalid expected family package path"
+            )
+
+        normalized[filename] = package
+
+    if checksums in normalized.values():
+        raise ReceiverError(
+            "Checksum manifest overlaps package input"
+        )
+
+    if (
+        type(requests) is not dict
+        or not set(requests) <= normalized.keys()
+    ):
+        raise ReceiverError(
+            "Unexpected family member request inventory"
+        )
+
+    arguments = [
+        "validate-family",
+        "--restricted-receipt",
+        "--family=" + family,
+        "--version=" + version,
+        "--checksums=" + checksums,
+    ]
+
+    for filename in sorted(normalized):
+        arguments.append(
+            "--package=" + normalized[filename]
+        )
+
+    total = 0
+
+    for filename, members in sorted(requests.items()):
+        if (
+            type(members) is not tuple
+            or not members
+        ):
+            raise ReceiverError(
+                "Invalid family member request collection"
+            )
+
+        seen = set()
+
+        for member in members:
+            if (
+                not isinstance(member, str)
+                or not 0 < len(member) <= 4096
+                or member.startswith("-")
+                or re.fullmatch(
+                    r"[A-Za-z0-9_.+@/-]+",
+                    member,
+                    re.ASCII,
+                ) is None
+                or any(
+                    component in {"", ".", ".."}
+                    for component in member.split("/")
+                )
+            ):
+                raise ReceiverError(
+                    "Invalid family member request path"
+                )
+
+            if member in seen:
+                raise ReceiverError(
+                    "Duplicate family member request"
+                )
+
+            seen.add(member)
+
+            total += 1
+
+            if total > MAX_FAMILY_REQUESTS:
+                raise ReceiverError(
+                    "Family member request count exceeds policy"
+                )
+
+        for member in sorted(seen):
+            arguments.extend([
+                "--select-member",
+                filename,
+                member,
+            ])
+
+    return restricted_command(
+        uid,
+        gid,
+        helper,
+        arguments,
+    )
+
+
+def inspect_protected_family(
+    *,
+    uid,
+    gid,
+    helper,
+    family,
+    version,
+    architecture,
+    checksums,
+    packages,
+    expected_names,
+    expected_checksums,
+    request_builder,
+    evidence_binder,
+    manifest_reader,
+):
+    """Acquire a restricted family receipt and bind its member plan.
+
+    The expected identities, checksums and policy callbacks must
+    originate from trusted pipeline code.
+
+    The caller must exclusively control protected storage and
+    provision trusted helper source files before invoking this
+    operation.
+    """
+
+    require_root()
+
+    if not all(
+        callable(callback)
+        for callback in (
+            request_builder,
+            evidence_binder,
+            manifest_reader,
+        )
+    ):
+        raise ReceiverError(
+            "Trusted family policy callbacks required"
+        )
+
+    if (
+        type(packages) is not dict
+        or type(expected_names) is not dict
+        or type(expected_checksums) is not dict
+        or not packages
+        or set(packages) != set(expected_names)
+        or set(packages) != set(expected_checksums)
+    ):
+        raise ReceiverError(
+            "Expected family input inventory mismatch"
+        )
+
+    packages = dict(packages)
+    expected_names = dict(expected_names)
+    expected_checksums = dict(expected_checksums)
+
+    for digest in expected_checksums.values():
+        if (
+            not isinstance(digest, str)
+            or DIGEST.fullmatch(digest) is None
+        ):
+            raise ReceiverError(
+                "Invalid expected family archive digest"
+            )
+
+    if architecture not in ("x86_64", "any"):
+        raise ReceiverError(
+            "Unexpected family architecture"
+        )
+
+    helper = validate_absolute_path(helper)
+    checksums = validate_absolute_path(checksums)
+
+    requests = request_builder(expected_names)
+
+    command = restricted_family_command(
+        uid=uid,
+        gid=gid,
+        helper=helper,
+        family=family,
+        version=version,
+        checksums=checksums,
+        packages=packages,
+        requests=requests,
+    )
+
+    dependencies = (
+        "candidate_privileges.py",
+        "package_release_contract.py",
+    )
+
+    deadline = (
+        time.monotonic()
+        + len(packages) * FAMILY_ARCHIVE_TIMEOUT
+    )
+
+    helpers = protected_helper_identities(
+        helper,
+        dependencies,
+    )
+
+    manifest_identity = protected_file_identity(
+        checksums
+    )
+
+    # file_identity includes the stat size at index 6.
+    if not (
+        0 < manifest_identity[6]
+        <= MAX_FAMILY_MANIFEST_BYTES
+    ):
+        raise ReceiverError(
+            "Protected checksum manifest outside size policy"
+        )
+
+    archive_identities = {
+        filename: protected_file_identity(
+            package
+        )
+        for filename, package in sorted(
+            packages.items()
+        )
+    }
+
+    if manifest_reader(checksums) != expected_checksums:
+        raise ReceiverError(
+            "Protected checksum manifest disagreement"
+        )
+
+    if (
+        protected_file_identity(checksums)
+        != manifest_identity
+    ):
+        raise ReceiverError(
+            "Protected checksum manifest changed"
+        )
+
+    remaining_time(deadline)
+
+    process = subprocess.Popen(
+        command,
+        cwd="/",
+        env=ENVIRONMENT,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+        close_fds=True,
+    )
+
+    try:
+        data = receive_linkage_receipt(
+            process,
+            deadline=deadline,
+        )
+
+    finally:
+        stop_process_group(process)
+
+    if process.returncode != 0:
+        raise ReceiverError(
+            "Family inspector did not terminate successfully"
+        )
+
+    remaining_time(deadline)
+
+    if protected_helper_identities(
+        helper,
+        dependencies,
+    ) != helpers:
+        raise ReceiverError(
+            "Protected family helper changed"
+        )
+
+    if (
+        protected_file_identity(checksums)
+        != manifest_identity
+        or manifest_reader(checksums)
+        != expected_checksums
+        or protected_file_identity(checksums)
+        != manifest_identity
+    ):
+        raise ReceiverError(
+            "Protected checksum manifest changed"
+        )
+
+    for filename, package in sorted(
+        packages.items()
+    ):
+        if (
+            protected_file_identity(package)
+            != archive_identities[filename]
+        ):
+            raise ReceiverError(
+                "Protected family archive changed"
+            )
+
+    receipt = decode_linkage_receipt(data)
+
+    if set(receipt) != {
+        "schema",
+        "family",
+        "version",
+        "architecture",
+        "structural_and_identity_validation",
+        "packages",
+    }:
+        raise ReceiverError(
+            "Unexpected compact family receipt fields"
+        )
+
+    if type(receipt["packages"]) is not dict:
+        raise ReceiverError(
+            "Invalid compact family package collection"
+        )
+
+    if set(receipt["packages"]) != set(
+        expected_names.values()
+    ):
+        raise ReceiverError(
+            "Compact family package inventory mismatch"
+        )
+
+    for filename, name in expected_names.items():
+        package = receipt["packages"][name]
+
+        required = requests.get(filename, ())
+
+        fields = {"identity"}
+
+        if required:
+            fields.update({
+                "entries",
+                "selected_members",
+            })
+
+        if (
+            type(package) is not dict
+            or set(package) != fields
+        ):
+            raise ReceiverError(
+                "Unexpected compact package receipt fields"
+            )
+
+        if required:
+            if (
+                type(package["entries"]) is not dict
+                or set(package["entries"])
+                != set(required)
+            ):
+                raise ReceiverError(
+                    "Unexpected compact member inventory"
+                )
+
+            for entry in package["entries"].values():
+                if (
+                    type(entry) is not dict
+                    or set(entry) != {"type", "size"}
+                ):
+                    raise ReceiverError(
+                        "Unexpected compact member fields"
+                    )
+
+    plan = evidence_binder(
+        receipt,
+        expected_names=expected_names,
+        expected_checksums=expected_checksums,
+        family=family,
+        version=version,
+        architecture=architecture,
+    )
+
+    expected_members = [
+        (filename, member)
+        for filename in sorted(requests)
+        for member in sorted(requests[filename])
+    ]
+
+    if (
+        type(plan) is not list
+        or len(plan) != len(expected_members)
+        or any(
+            type(record) is not dict
+            or set(record) != {
+                "name",
+                "version",
+                "architecture",
+                "filename",
+                "archive_sha256",
+                "member",
+                "size",
+                "sha256",
+            }
+            for record in plan
+        )
+        or [
+            (record["filename"], record["member"])
+            for record in plan
+        ] != expected_members
+    ):
+        raise ReceiverError(
+            "Bound family member plan disagreement"
+        )
+
+    for record in plan:
+        filename = record["filename"]
+
+        if (
+            record["name"] != expected_names[filename]
+            or record["version"] != version
+            or record["architecture"] != architecture
+            or record["archive_sha256"]
+                != expected_checksums[filename]
+        ):
+            raise ReceiverError(
+                "Bound family archive identity disagreement"
+            )
+
+        validate_expected_member(
+            record["size"],
+            record["sha256"],
+        )
+
+    remaining_time(deadline)
+
+    return {
+        "archive_receipt": receipt,
+        "member_plan": plan,
+    }
+
+
+def validate_combined_family(
+    *,
+    uid,
+    gid,
+    archive_helper,
+    linkage_helper,
+    family,
+    version,
+    architecture,
+    checksums,
+    packages,
+    expected_names,
+    expected_checksums,
+    workspace,
+    request_builder,
+    evidence_binder,
+    manifest_reader,
+    receipt_validator,
+):
+    """Validate a complete family and all policy-required executables.
+
+    Candidate archives and materialized members are never executed.
+
+    Trusted pipeline code must supply the expected release identities,
+    protected intake checksums, policy callbacks and exclusively
+    controlled protected storage.
+
+    No combined evidence is returned until all required inspections,
+    protected input revalidation and temporary file cleanup succeed.
+    """
+
+    require_root()
+
+    validate_inspection_account(uid, gid)
+
+    if not all(
+        callable(callback)
+        for callback in (
+            request_builder,
+            evidence_binder,
+            manifest_reader,
+            receipt_validator,
+        )
+    ):
+        raise ReceiverError(
+            "Trusted combined family policy callbacks required"
+        )
+
+    if (
+        type(packages) is not dict
+        or type(expected_names) is not dict
+        or type(expected_checksums) is not dict
+        or not 0 < len(packages) <= MAX_FAMILY_ARCHIVES
+        or set(packages) != set(expected_names)
+        or set(packages) != set(expected_checksums)
+    ):
+        raise ReceiverError(
+            "Combined family input inventory mismatch"
+        )
+
+    packages = {
+        filename: validate_absolute_path(package)
+        for filename, package in packages.items()
+    }
+
+    expected_names = dict(expected_names)
+    expected_checksums = dict(expected_checksums)
+
+    archive_helper = validate_absolute_path(
+        archive_helper
+    )
+
+    linkage_helper = validate_absolute_path(
+        linkage_helper
+    )
+
+    checksums = validate_absolute_path(checksums)
+    workspace = validate_absolute_path(workspace)
+
+    if (
+        Path(archive_helper).name != "candidate_archive.py"
+        or Path(linkage_helper).name != "candidate_linkage.py"
+    ):
+        raise ReceiverError(
+            "Unexpected combined family helper name"
+        )
+
+    requests = request_builder(expected_names)
+
+    # Validate command inputs before establishing any
+    # provisional materialization workspace.
+    restricted_family_command(
+        uid=uid,
+        gid=gid,
+        helper=archive_helper,
+        family=family,
+        version=version,
+        checksums=checksums,
+        packages=packages,
+        requests=requests,
+    )
+
+    archive_dependencies = (
+        "candidate_privileges.py",
+        "package_release_contract.py",
+    )
+
+    linkage_dependencies = (
+        "candidate_privileges.py",
+    )
+
+    initial_archive_helpers = protected_helper_identities(
+        archive_helper,
+        archive_dependencies,
+    )
+
+    initial_linkage_helpers = None
+
+    if requests:
+        initial_linkage_helpers = (
+            protected_helper_identities(
+                linkage_helper,
+                linkage_dependencies,
+            )
+        )
+
+    initial_manifest = protected_file_identity(
+        checksums
+    )
+
+    initial_archives = {
+        filename: protected_file_identity(package)
+        for filename, package in sorted(
+            packages.items()
+        )
+    }
+
+    def verify_inputs():
+        if protected_helper_identities(
+            archive_helper,
+            archive_dependencies,
+        ) != initial_archive_helpers:
+            raise ReceiverError(
+                "Combined family archive helper changed"
+            )
+
+        if requests and protected_helper_identities(
+            linkage_helper,
+            linkage_dependencies,
+        ) != initial_linkage_helpers:
+            raise ReceiverError(
+                "Combined family linkage helper changed"
+            )
+
+        if (
+            protected_file_identity(checksums)
+            != initial_manifest
+        ):
+            raise ReceiverError(
+                "Combined family checksum manifest changed"
+            )
+
+        for filename, package in sorted(
+            packages.items()
+        ):
+            if (
+                protected_file_identity(package)
+                != initial_archives[filename]
+            ):
+                raise ReceiverError(
+                    "Combined family archive identity changed"
+                )
+
+    acquired = inspect_protected_family(
+        uid=uid,
+        gid=gid,
+        helper=archive_helper,
+        family=family,
+        version=version,
+        architecture=architecture,
+        checksums=checksums,
+        packages=packages,
+        expected_names=expected_names,
+        expected_checksums=expected_checksums,
+        request_builder=request_builder,
+        evidence_binder=evidence_binder,
+        manifest_reader=manifest_reader,
+    )
+
+    verify_inputs()
+
+    archive_receipt = acquired["archive_receipt"]
+    plan = acquired["member_plan"]
+
+    expected_members = [
+        (filename, member)
+        for filename in sorted(requests)
+        for member in sorted(requests[filename])
+    ]
+
+    if [
+        (record["filename"], record["member"])
+        for record in plan
+    ] != expected_members:
+        raise ReceiverError(
+            "Combined family member inventory disagreement"
+        )
+
+    # Independently compare the bound plan with the selected
+    # member records before accepting materialization inputs.
+    for record in plan:
+        selected = archive_receipt["packages"][
+            record["name"]
+        ]["selected_members"][record["member"]]
+
+        if selected != {
+            "size": record["size"],
+            "sha256": record["sha256"],
+        }:
+            raise ReceiverError(
+                "Combined family member evidence disagreement"
+            )
+
+    evidence = []
+
+    if plan:
+        parent = open_protected_directory(workspace)
+
+        directory_name = (
+            ".candidate-family-" + secrets.token_hex(16)
+        )
+
+        directory_path = str(
+            Path(workspace) / directory_name
+        )
+
+        created = False
+        directory = None
+
+        try:
+            os.mkdir(
+                directory_name,
+                mode=0o700,
+                dir_fd=parent,
+            )
+
+            created = True
+
+            directory = os.open(
+                directory_name,
+                DIRECTORY_FLAGS,
+                dir_fd=parent,
+            )
+
+            info = os.fstat(directory)
+
+            validate_protected_directory(info)
+
+            # Remove inherited access and default ACLs.
+            remove_access_acl(directory)
+
+            try:
+                os.removexattr(
+                    directory,
+                    "system.posix_acl_default",
+                )
+            except OSError as error:
+                if error.errno not in (
+                    errno.ENODATA,
+                    errno.ENOTSUP,
+                ):
+                    raise
+
+            # The restricted inspector needs traversal access,
+            # but must not be able to modify the workspace.
+            os.fchmod(directory, 0o755)
+
+            info = os.fstat(directory)
+
+            validate_protected_directory(info)
+
+            if stat.S_IMODE(info.st_mode) != 0o755:
+                raise ReceiverError(
+                    "Invalid combined family workspace mode"
+                )
+
+            verify_directory_identity(
+                workspace,
+                parent,
+            )
+
+            verify_directory_identity(
+                directory_path,
+                directory,
+            )
+
+            for index, record in enumerate(plan):
+                verify_inputs()
+
+                verify_directory_identity(
+                    directory_path,
+                    directory,
+                )
+
+                destination_name = f"member-{index:04d}"
+
+                member_path = str(
+                    Path(directory_path)
+                    / destination_name
+                )
+
+                require_absent_destination(
+                    directory,
+                    destination_name,
+                )
+
+                materialized = False
+
+                try:
+                    transfer = materialize_verified_member(
+                        uid=uid,
+                        gid=gid,
+                        helper=archive_helper,
+                        package=packages[record["filename"]],
+                        name=record["name"],
+                        version=record["version"],
+                        architecture=record["architecture"],
+                        archive_sha256=record["archive_sha256"],
+                        member=record["member"],
+                        member_size=record["size"],
+                        member_sha256=record["sha256"],
+                        destination=directory_path,
+                        destination_name=destination_name,
+                    )
+
+                    materialized = True
+
+                    expected_transfer = {
+                        "package": packages[record["filename"]],
+                        "name": record["name"],
+                        "version": record["version"],
+                        "architecture": record["architecture"],
+                        "archive_sha256": record["archive_sha256"],
+                        "member": record["member"],
+                        "size": record["size"],
+                        "sha256": record["sha256"],
+                        "path": member_path,
+                    }
+
+                    if transfer != expected_transfer:
+                        raise ReceiverError(
+                            "Combined member transfer disagreement"
+                        )
+
+                    linkage = inspect_materialized_member(
+                        uid=uid,
+                        gid=gid,
+                        helper=linkage_helper,
+                        executable=member_path,
+                        expected_size=record["size"],
+                        expected_sha256=record["sha256"],
+                        receipt_validator=receipt_validator,
+                    )
+
+                    evidence.append({
+                        **record,
+                        "linkage": linkage,
+                    })
+
+                finally:
+                    if materialized:
+                        os.unlink(
+                            destination_name,
+                            dir_fd=directory,
+                        )
+
+                        os.fsync(directory)
+
+                verify_inputs()
+
+            if os.listdir(directory):
+                raise ReceiverError(
+                    "Combined family workspace is not empty"
+                )
+
+            verify_directory_identity(
+                directory_path,
+                directory,
+            )
+
+        finally:
+            try:
+                if directory is not None:
+                    os.close(directory)
+            finally:
+                try:
+                    if created:
+                        os.rmdir(
+                            directory_name,
+                            dir_fd=parent,
+                        )
+
+                        os.fsync(parent)
+                finally:
+                    os.close(parent)
+
+    verify_inputs()
+
+    if manifest_reader(checksums) != expected_checksums:
+        raise ReceiverError(
+            "Final combined family manifest disagreement"
+        )
+
+    verify_inputs()
+
+    if len(evidence) != len(expected_members):
+        raise ReceiverError(
+            "Incomplete combined family linkage evidence"
+        )
+
+    return {
+        "schema": 1,
+        "family": family,
+        "version": version,
+        "architecture": architecture,
+        "structural_and_identity_validation": True,
+        "required_linkage_validation": {
+            "applicable": bool(expected_members),
+            "required_member_count": len(expected_members),
+            "validated_member_count": len(evidence),
+        },
+        "archive_receipt": archive_receipt,
+        "linkage_members": evidence,
+    }
