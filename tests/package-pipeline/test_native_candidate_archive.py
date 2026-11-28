@@ -658,7 +658,6 @@ class WorkerCases:
             self.compressed,
         )
 
-        print("PASS: Selected member bytes match native bsdtar.")
 
     def test_selected_members_survive_family_validation(self):
         name = "usr/bin/broot"
@@ -726,7 +725,6 @@ class WorkerCases:
 
         self.assertEqual(selected, ordinary)
 
-        print("PASS: Selected member identity bound to validated family.")
 
     def test_selected_missing_and_nonregular_members(self):
         registry = self.archive.load_release_registry()
@@ -885,7 +883,6 @@ class WorkerCases:
             self.compressed,
         )
 
-        print("PASS: Failed decompressor cannot produce member results.")
 
 
 @unittest.skipUnless(
