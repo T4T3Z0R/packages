@@ -1,5 +1,6 @@
 """Portable regression coverage for candidate archive inspection."""
 
+import errno
 import hashlib
 import importlib.util
 import io
@@ -1264,6 +1265,99 @@ class ResourceBoundaryTests(unittest.TestCase):
                 )
         finally:
             os.close(write_fd)
+
+
+class DescriptorValidationTests(unittest.TestCase):
+
+    def assert_rejected_without_descriptor_leak(
+        self, operation, message
+    ):
+        real_open = os.open
+        descriptors = []
+
+        def record_open(*args, **kwargs):
+            descriptor = real_open(*args, **kwargs)
+            descriptors.append(descriptor)
+            return descriptor
+
+        with patch.object(
+            archive.os, "open", side_effect=record_open
+        ):
+            with self.assertRaisesRegex(
+                archive.ArchiveError, message
+            ):
+                operation()
+
+        self.assertEqual(len(descriptors), 1)
+
+        for descriptor in descriptors:
+            with self.assertRaises(OSError) as error:
+                os.fstat(descriptor)
+
+            self.assertEqual(error.exception.errno, errno.EBADF)
+
+    def test_directory_package_rejected_and_closed(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            with patch.object(
+                archive, "require_unprivileged"
+            ):
+                self.assert_rejected_without_descriptor_leak(
+                    lambda: archive.inspect_package(scratch),
+                    "Package input must be a regular file",
+                )
+
+    def test_fifo_package_rejected_and_closed(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / "fifo"
+            os.mkfifo(path)
+
+            with patch.object(
+                archive, "require_unprivileged"
+            ):
+                self.assert_rejected_without_descriptor_leak(
+                    lambda: archive.inspect_package(path),
+                    "Package input must be a regular file",
+                )
+
+    def test_empty_package_rejected_and_closed(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / "empty"
+            path.touch()
+
+            with patch.object(
+                archive, "require_unprivileged"
+            ):
+                self.assert_rejected_without_descriptor_leak(
+                    lambda: archive.inspect_package(path),
+                    "Compressed package size outside policy",
+                )
+
+    def test_directory_manifest_rejected_and_closed(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            self.assert_rejected_without_descriptor_leak(
+                lambda: archive.read_checksum_manifest(scratch),
+                "Checksum manifest must be a regular file",
+            )
+
+    def test_fifo_manifest_rejected_and_closed(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / "fifo"
+            os.mkfifo(path)
+
+            self.assert_rejected_without_descriptor_leak(
+                lambda: archive.read_checksum_manifest(path),
+                "Checksum manifest must be a regular file",
+            )
+
+    def test_empty_manifest_rejected_and_closed(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / "empty"
+            path.touch()
+
+            self.assert_rejected_without_descriptor_leak(
+                lambda: archive.read_checksum_manifest(path),
+                "Checksum manifest size outside policy",
+            )
 
 
 if __name__ == "__main__":

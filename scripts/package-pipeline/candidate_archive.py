@@ -1264,8 +1264,8 @@ def inspect_package(path):
         | os.O_CLOEXEC,
     )
 
-    with os.fdopen(descriptor, "rb") as source:
-        info = os.fstat(source.fileno())
+    try:
+        info = os.fstat(descriptor)
 
         if not stat.S_ISREG(info.st_mode):
             raise ArchiveError(
@@ -1276,7 +1276,11 @@ def inspect_package(path):
             raise ArchiveError(
                 "Compressed package size outside policy"
             )
+    except BaseException:
+        os.close(descriptor)
+        raise
 
+    with os.fdopen(descriptor, "rb") as source:
         original_digest = file_digest(
             source,
             info.st_size,
@@ -1759,8 +1763,8 @@ def read_checksum_manifest(path):
         | os.O_CLOEXEC,
     )
 
-    with os.fdopen(descriptor, "rb") as stream:
-        before = os.fstat(stream.fileno())
+    try:
+        before = os.fstat(descriptor)
 
         if not stat.S_ISREG(before.st_mode):
             raise ArchiveError(
@@ -1774,7 +1778,11 @@ def read_checksum_manifest(path):
             raise ArchiveError(
                 "Checksum manifest size outside policy"
             )
+    except BaseException:
+        os.close(descriptor)
+        raise
 
+    with os.fdopen(descriptor, "rb") as stream:
         data = stream.read(before.st_size + 1)
         after = os.fstat(stream.fileno())
 
