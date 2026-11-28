@@ -1124,6 +1124,10 @@ class NativeCombinedFamilyTests(unittest.TestCase):
         real_read = os.read
         real_collect = self.receiver.receive_linkage_receipt
 
+        # Retain bounded rejection evidence for synthetic
+        # native fixtures without printing child stderr.
+        # The actual collector still enforces every
+        # transport and validation requirement.
         self.inspector_diagnostics = []
 
         def collect_with_diagnostics(process, *, deadline):
@@ -1160,12 +1164,6 @@ class NativeCombinedFamilyTests(unittest.TestCase):
                     bytes(diagnostics)
                 )
 
-                print(
-                    "Native restricted inspector stderr: "
-                    + repr(bytes(diagnostics)),
-                    file=sys.stderr,
-                    flush=True,
-                )
                 raise
 
         with patch.object(
@@ -1359,8 +1357,9 @@ class NativeCombinedFamilyTests(unittest.TestCase):
             len(self.inspector_diagnostics), 1
         )
 
-        self.assertTrue(
-            self.inspector_diagnostics[0]
+        self.assertIn(
+            b"ELF range outside file bounds",
+            self.inspector_diagnostics[0],
         )
 
     def test_native_later_linkage_failure(self):
@@ -1400,6 +1399,15 @@ class NativeCombinedFamilyTests(unittest.TestCase):
         self.assertEqual(
             len(accepted),
             2,
+        )
+
+        self.assertEqual(
+            len(self.inspector_diagnostics), 1
+        )
+
+        self.assertIn(
+            b"Unsupported candidate dynamic tag: DT_RUNPATH",
+            self.inspector_diagnostics[0],
         )
 
     def test_native_manifest_disagreement(self):
