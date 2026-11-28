@@ -458,27 +458,20 @@ jobs:
           command -v bsdtar
           python -m unittest discover -s tests/package-pipeline -p 'test_native_candidate_archive.py' -v
 
-      - name: Qualify static ELF dependency resolver
+      - name: Verify portable candidate linkage policy
+        run: python -I -B -m unittest discover -s tests/package-pipeline -p 'test_candidate_linkage.py' -v
+
+      - name: Verify native candidate linkage boundaries
+        env:
+          PACKAGE_PIPELINE_NATIVE_TESTS: "1"
         run: |
           set -euo pipefail
+          command -v cc
           command -v lddtree
           command -v readelf
           command -v setpriv
           pacman -Q pax-utils python-pyelftools
-          scratch="$(mktemp -d)"
-          trap 'rm -rf -- "$scratch"' EXIT
-          chmod 0755 "$scratch"
-          install -m 0644 tests/package-pipeline/qualify_static_linkage.py "$scratch/probe.py"
-          setpriv \
-            --reuid=nobody \
-            --regid="$(id -g nobody)" \
-            --clear-groups \
-            --inh-caps=-all \
-            --ambient-caps=-all \
-            --bounding-set=-all \
-            --no-new-privs \
-            /usr/bin/env -i PATH=/usr/bin:/bin LANG=C HOME=/tmp \
-            /usr/bin/python -I -B "$scratch/probe.py"
+          python -I -B -m unittest discover -s tests/package-pipeline -p 'test_native_candidate_linkage.py' -v
 
       - name: Run real-package integration tests
         run: python -m unittest discover -s tests/package-pipeline -p "test_integration.py" -v
