@@ -1091,9 +1091,57 @@ class NativeCombinedFamilyTests(unittest.TestCase):
 
         arguments.update(overrides)
 
-        return self.receiver.validate_combined_family(
-            **arguments
-        )
+        from unittest.mock import patch
+
+        real_read = os.read
+        real_collect = self.receiver.receive_linkage_receipt
+
+        def collect_with_diagnostics(process, *, deadline):
+            diagnostic_fd = process.stderr.fileno()
+            diagnostics = bytearray()
+
+            def capture_read(fd, size):
+                data = real_read(fd, size)
+
+                if fd == diagnostic_fd:
+                    remaining = (
+                        self.receiver.MAX_DIAGNOSTIC_BYTES
+                        - len(diagnostics)
+                    )
+
+                    if remaining > 0:
+                        diagnostics.extend(data[:remaining])
+
+                return data
+
+            try:
+                with patch.object(
+                    self.receiver.os,
+                    "read",
+                    side_effect=capture_read,
+                ):
+                    return real_collect(
+                        process,
+                        deadline=deadline,
+                    )
+
+            except self.receiver.ReceiverError:
+                print(
+                    "Native restricted inspector stderr: "
+                    + repr(bytes(diagnostics)),
+                    file=sys.stderr,
+                    flush=True,
+                )
+                raise
+
+        with patch.object(
+            self.receiver,
+            "receive_linkage_receipt",
+            side_effect=collect_with_diagnostics,
+        ):
+            return self.receiver.validate_combined_family(
+                **arguments
+            )
 
     def assert_workspace_empty(self):
         self.assertEqual(
