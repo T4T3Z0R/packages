@@ -120,7 +120,7 @@ jobs:
           test "$GITHUB_SHA" = "$EXPECTED_REVISION"
 
       - name: Install test dependencies
-        run: pacman -Syu --noconfirm --needed python bash git gnupg libarchive zstd diffutils jq base-devel gawk gettext acl
+        run: pacman -Syu --noconfirm --needed python bash git gnupg libarchive zstd diffutils jq base-devel gawk gettext acl pax-utils
 
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -457,6 +457,28 @@ jobs:
           command -v zstd
           command -v bsdtar
           python -m unittest discover -s tests/package-pipeline -p 'test_native_candidate_archive.py' -v
+
+      - name: Qualify static ELF dependency resolver
+        run: |
+          set -euo pipefail
+          command -v lddtree
+          command -v readelf
+          command -v setpriv
+          pacman -Q pax-utils python-pyelftools
+          scratch="$(mktemp -d)"
+          trap 'rm -rf -- "$scratch"' EXIT
+          chmod 0755 "$scratch"
+          install -m 0644 tests/package-pipeline/qualify_static_linkage.py "$scratch/probe.py"
+          setpriv \
+            --reuid=nobody \
+            --regid="$(id -g nobody)" \
+            --clear-groups \
+            --inh-caps=-all \
+            --ambient-caps=-all \
+            --bounding-set=-all \
+            --no-new-privs \
+            /usr/bin/env -i PATH=/usr/bin:/bin LANG=C HOME=/tmp \
+            /usr/bin/python -I -B "$scratch/probe.py"
 
       - name: Run real-package integration tests
         run: python -m unittest discover -s tests/package-pipeline -p "test_integration.py" -v
