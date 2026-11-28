@@ -446,6 +446,18 @@ jobs:
           command -v getfacl
           python -m unittest discover -s tests/package-pipeline -p 'test_native_candidate_intake.py' -v
 
+      - name: Verify portable candidate archive inspection
+        run: python -m unittest discover -s tests/package-pipeline -p 'test_candidate_archive.py' -v
+
+      - name: Verify native candidate archive boundaries
+        env:
+          PACKAGE_PIPELINE_NATIVE_TESTS: "1"
+        run: |
+          set -euo pipefail
+          command -v zstd
+          command -v bsdtar
+          python -m unittest discover -s tests/package-pipeline -p 'test_native_candidate_archive.py' -v
+
       - name: Run real-package integration tests
         run: python -m unittest discover -s tests/package-pipeline -p "test_integration.py" -v
 
