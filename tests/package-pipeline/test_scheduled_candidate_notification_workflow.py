@@ -25,7 +25,7 @@ class ScheduledNotificationTests(unittest.TestCase):
         )[0]
 
     def test_schedule_only_and_serialization(self):
-        self.assertIn("if: ${{ github.event_name == 'schedule' }}",self.writer)
+        self.assertIn("if: ${{ github.repository == 'T4T3Z0R/packages' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule') }}",self.writer)
         self.assertIn('group: package-candidate-issue-writes',self.writer)
         self.assertIn('cancel-in-progress: false',self.writer)
         self.assertIn('queue: max',self.writer)

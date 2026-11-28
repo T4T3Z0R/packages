@@ -186,7 +186,7 @@ jobs:
   approval-ready:
     name: Notify signing approval ready
     needs: validate
-    if: github.event_name == 'workflow_dispatch' && inputs.publish == true
+    if: ${{ github.repository == 'T4T3Z0R/packages' && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' && inputs.publish == true) }}
     runs-on: ubuntu-latest
     steps:
       - name: Send Pushover approval notification
@@ -209,7 +209,7 @@ jobs:
   publish:
     name: Sign and publish approved KeePassXC package(s)
     needs: [validate, approval-ready]
-    if: github.event_name == 'workflow_dispatch' && inputs.publish == true
+    if: ${{ github.repository == 'T4T3Z0R/packages' && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' && inputs.publish == true) }}
     runs-on: ubuntu-latest
     environment:
       name: arch-repo-publish

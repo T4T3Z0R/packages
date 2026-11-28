@@ -336,11 +336,11 @@ class WorkflowParityTests(unittest.TestCase):
                         ))
                 else:
                     self.assertIn(
-                        "    if: inputs.publish == true",
+                        "    if: ${{ github.repository == 'T4T3Z0R/packages' && github.ref == 'refs/heads/main' && (inputs.publish == true) }}",
                         approval,
                     )
                     self.assertIn(
-                        "    if: inputs.publish == true",
+                        "    if: ${{ github.repository == 'T4T3Z0R/packages' && github.ref == 'refs/heads/main' && (inputs.publish == true) }}",
                         publishing,
                     )
 

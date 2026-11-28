@@ -41,7 +41,7 @@ jobs:
         run: python scripts/package-pipeline/maintain-history.py
 
   recover:
-    if: inputs.mode == 'recover' && github.ref == 'refs/heads/main'
+    if: ${{ github.repository == 'T4T3Z0R/packages' && github.ref == 'refs/heads/main' && (inputs.mode == 'recover' && github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-latest
     environment:
       name: arch-repo-publish

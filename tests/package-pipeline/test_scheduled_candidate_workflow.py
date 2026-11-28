@@ -33,7 +33,7 @@ class ScheduledCandidateWorkflowTests(unittest.TestCase):
 
     def test_writer_is_schedule_only(self):
         self.assertIn(
-            "if: ${{ github.event_name == 'schedule' }}",
+            "if: ${{ github.repository == 'T4T3Z0R/packages' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule') }}",
             self.job,
         )
         self.assertIn("needs: discover", self.job)

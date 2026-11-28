@@ -105,11 +105,7 @@ jobs:
       revision: ${{ steps.selection.outputs.revision }}
     name: Prepare guarded draft source-selection PR
     needs: evaluate
-    if: >-
-      github.event_name == 'issues' &&
-      github.actor == 'T4T3Z0R' &&
-      (needs.evaluate.outputs.status == 'template_pr_ready' ||
-      needs.evaluate.outputs.status == 'fixed_pr_ready')
+    if: ${{ github.repository == 'T4T3Z0R/packages' && github.ref == 'refs/heads/main' && (github.event_name == 'issues' && github.actor == 'T4T3Z0R' && (needs.evaluate.outputs.status == 'template_pr_ready' || needs.evaluate.outputs.status == 'fixed_pr_ready')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -407,10 +403,7 @@ jobs:
   dispatch-selection-ci:
     name: Dispatch guarded source-selection CI
     needs: [evaluate, create-selection-pr]
-    if: >-
-      github.event_name == 'issues' &&
-      github.actor == 'T4T3Z0R' &&
-      needs.create-selection-pr.result == 'success'
+    if: ${{ github.repository == 'T4T3Z0R/packages' && github.ref == 'refs/heads/main' && (github.event_name == 'issues' && github.actor == 'T4T3Z0R' && needs.create-selection-pr.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
 

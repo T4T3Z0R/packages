@@ -247,11 +247,7 @@ jobs:
   dispatch-release-approval:
     name: Request protected signing approval if needed
     needs: verify-merged-selection
-    if: >-
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
-      github.actor == 'T4T3Z0R' &&
-      needs.verify-merged-selection.outputs.decision == 'review_validation'
+    if: ${{ github.repository == 'T4T3Z0R/packages' && github.ref == 'refs/heads/main' && (github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor == 'T4T3Z0R' && needs.verify-merged-selection.outputs.decision == 'review_validation') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

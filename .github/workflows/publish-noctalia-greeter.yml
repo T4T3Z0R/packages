@@ -448,7 +448,7 @@ jobs:
   approval-ready:
     name: Notify signing approval ready
     needs: validate
-    if: inputs.publish == true
+    if: ${{ github.repository == 'T4T3Z0R/packages' && github.ref == 'refs/heads/main' && (inputs.publish == true) }}
     runs-on: ubuntu-latest
 
     steps:
@@ -485,7 +485,7 @@ jobs:
     needs:
       - validate
       - approval-ready
-    if: inputs.publish == true
+    if: ${{ github.repository == 'T4T3Z0R/packages' && github.ref == 'refs/heads/main' && (inputs.publish == true) }}
 
     runs-on: ubuntu-latest
 

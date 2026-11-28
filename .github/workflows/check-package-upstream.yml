@@ -152,7 +152,7 @@ jobs:
 
   write-reviews:
     name: Create and verify scheduled candidate reviews
-    if: ${{ github.event_name == 'schedule' }}
+    if: ${{ github.repository == 'T4T3Z0R/packages' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule') }}
     needs: discover
     runs-on: ubuntu-latest
     timeout-minutes: 30

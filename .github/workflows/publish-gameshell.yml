@@ -711,10 +711,7 @@ jobs:
     needs:
       - detect
       - validate
-    if: >-
-      needs.detect.outputs.update == 'true' &&
-      github.event_name == 'workflow_dispatch' &&
-      inputs.publish == true
+    if: ${{ github.repository == 'T4T3Z0R/packages' && github.ref == 'refs/heads/main' && (needs.detect.outputs.update == 'true' && github.event_name == 'workflow_dispatch' && inputs.publish == true) }}
     runs-on: ubuntu-latest
 
     steps:
@@ -747,10 +744,7 @@ jobs:
       - detect
       - validate
       - approval-ready
-    if: >-
-      needs.detect.outputs.update == 'true' &&
-      github.event_name == 'workflow_dispatch' &&
-      inputs.publish == true
+    if: ${{ github.repository == 'T4T3Z0R/packages' && github.ref == 'refs/heads/main' && (needs.detect.outputs.update == 'true' && github.event_name == 'workflow_dispatch' && inputs.publish == true) }}
     runs-on: ubuntu-latest
 
     environment:
