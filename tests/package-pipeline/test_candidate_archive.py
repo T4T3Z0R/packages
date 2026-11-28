@@ -1360,5 +1360,680 @@ class DescriptorValidationTests(unittest.TestCase):
             )
 
 
+class SelectedMemberTests(unittest.TestCase):
+
+    def inspect_selected(self, data, requested):
+        return archive.inspect_tar_stream(
+            io.BytesIO(data),
+            requested_members=requested,
+        )
+
+    def archive_with(self, *members):
+        return (
+            body()
+            + b"".join(members)
+            + b"\0" * 1024
+        )
+
+    def test_default_inventory_unchanged(self):
+        data = self.archive_with()
+
+        result = self.inspect_selected(data, ())
+
+        self.assertEqual(result, inspect(data))
+        self.assertNotIn("selected_members", result)
+
+    def test_exact_selected_member_digest(self):
+        import hashlib
+
+        payload = b"license contents\n"
+
+        result = self.inspect_selected(
+            self.archive_with(
+                member("usr/share/license", payload),
+            ),
+            ("usr/share/license",),
+        )
+
+        self.assertEqual(
+            result["selected_members"],
+            {
+                "usr/share/license": {
+                    "size": len(payload),
+                    "sha256": hashlib.sha256(
+                        payload
+                    ).hexdigest(),
+                },
+            },
+        )
+
+    def test_multiple_selected_members(self):
+        import hashlib
+
+        payloads = {
+            "usr/share/first": b"first",
+            "usr/share/second": b"second",
+        }
+
+        result = self.inspect_selected(
+            self.archive_with(
+                *(
+                    member(name, payload)
+                    for name, payload in payloads.items()
+                ),
+                member("usr/share/unselected", b"ignored"),
+            ),
+            tuple(reversed(payloads)),
+        )
+
+        self.assertEqual(
+            set(result["selected_members"]),
+            set(payloads),
+        )
+
+        for name, payload in payloads.items():
+            self.assertEqual(
+                result["selected_members"][name]["sha256"],
+                hashlib.sha256(payload).hexdigest(),
+            )
+
+    def test_empty_regular_member(self):
+        import hashlib
+
+        result = self.inspect_selected(
+            self.archive_with(
+                member("usr/share/empty", b""),
+            ),
+            ("usr/share/empty",),
+        )
+
+        self.assertEqual(
+            result["selected_members"]["usr/share/empty"],
+            {
+                "size": 0,
+                "sha256": hashlib.sha256(b"").hexdigest(),
+            },
+        )
+
+    def test_multichunk_member_digest(self):
+        import hashlib
+
+        payload = b"x" * (archive.TAR_READ_CHUNK + 17)
+
+        result = self.inspect_selected(
+            self.archive_with(
+                member("usr/share/large", payload),
+            ),
+            ("usr/share/large",),
+        )
+
+        self.assertEqual(
+            result["selected_members"]["usr/share/large"],
+            {
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            },
+        )
+
+    def test_missing_selected_member(self):
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Missing selected archive members",
+        ):
+            self.inspect_selected(
+                self.archive_with(),
+                ("usr/share/missing",),
+            )
+
+    def test_duplicate_requests(self):
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Duplicate selected member",
+        ):
+            self.inspect_selected(
+                self.archive_with(),
+                ("usr/bin/broot", "usr/bin/broot"),
+            )
+
+    def test_invalid_member_requests(self):
+        for value in (
+            "/usr/bin/broot",
+            "./usr/bin/broot",
+            "usr//bin/broot",
+            "usr/bin/../broot",
+            "usr/bin/broot/",
+            ".",
+            "",
+            None,
+            ".PKGINFO",
+            ".BUILDINFO",
+            ".MTREE",
+        ):
+            with self.subTest(value=value):
+                with self.assertRaises(
+                    archive.ArchiveError
+                ):
+                    self.inspect_selected(
+                        self.archive_with(),
+                        (value,),
+                    )
+
+    def test_invalid_request_collection(self):
+        for value in (
+            "usr/bin/broot",
+            {"usr/bin/broot"},
+            None,
+            17,
+        ):
+            with self.subTest(value=value):
+                with self.assertRaises(
+                    archive.ArchiveError
+                ):
+                    self.inspect_selected(
+                        self.archive_with(),
+                        value,
+                    )
+
+    def test_selected_member_count_limit(self):
+        requests = tuple(
+            f"usr/share/member-{index}"
+            for index in range(
+                archive.MAX_SELECTED_MEMBERS + 1
+            )
+        )
+
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Selected member count exceeds policy",
+        ):
+            self.inspect_selected(
+                self.archive_with(),
+                requests,
+            )
+
+    def test_selected_directory_rejected(self):
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Selected member is not regular",
+        ):
+            self.inspect_selected(
+                self.archive_with(),
+                ("usr/bin",),
+            )
+
+    def test_selected_symbolic_link_rejected(self):
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Selected member is not regular",
+        ):
+            self.inspect_selected(
+                self.archive_with(
+                    member(
+                        "usr/bin/alias",
+                        kind=tarfile.SYMTYPE,
+                        target="broot",
+                    ),
+                ),
+                ("usr/bin/alias",),
+            )
+
+    def test_duplicate_archive_member_rejected(self):
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Duplicate archive member",
+        ):
+            self.inspect_selected(
+                self.archive_with(
+                    member("usr/share/notice", b"one"),
+                    member("usr/share/notice", b"two"),
+                ),
+                ("usr/share/notice",),
+            )
+
+    def test_invalid_trailing_archive_data(self):
+        data = self.archive_with(
+            member("usr/share/notice", b"valid payload"),
+        ) + b"x" * 512
+
+        with self.assertRaises(archive.ArchiveError):
+            self.inspect_selected(
+                data,
+                ("usr/share/notice",),
+            )
+
+    def test_truncated_selected_payload(self):
+        payload = member(
+            "usr/share/notice",
+            b"selected bytes",
+        )
+
+        data = body() + payload[:515]
+
+        with self.assertRaises(archive.ArchiveError):
+            self.inspect_selected(
+                data,
+                ("usr/share/notice",),
+            )
+
+    def test_selected_member_requires_expected_archive_digest(self):
+        from unittest.mock import patch
+
+        with (
+            patch.object(
+                archive,
+                "require_unprivileged",
+            ),
+            patch.object(
+                archive.os,
+                "open",
+            ) as opener,
+        ):
+            with self.assertRaisesRegex(
+                archive.ArchiveError,
+                "requires an expected archive digest",
+            ):
+                archive.inspect_package(
+                    "/unused/package.pkg.tar.zst",
+                    requested_members=("usr/bin/broot",),
+                )
+
+            opener.assert_not_called()
+
+    def test_invalid_expected_digest_precedes_open(self):
+        from unittest.mock import patch
+
+        with (
+            patch.object(
+                archive,
+                "require_unprivileged",
+            ),
+            patch.object(
+                archive.os,
+                "open",
+            ) as opener,
+        ):
+            with self.assertRaisesRegex(
+                archive.ArchiveError,
+                "Invalid expected package digest",
+            ):
+                archive.inspect_package(
+                    "/unused/package.pkg.tar.zst",
+                    expected_sha256="invalid",
+                )
+
+            opener.assert_not_called()
+
+    def test_digest_mismatch_precedes_decompression(self):
+        import tempfile
+
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixture.pkg.tar.zst"
+            path.write_bytes(b"not the expected bytes")
+
+            with (
+                patch.object(
+                    archive,
+                    "require_unprivileged",
+                ),
+                patch.object(
+                    archive.subprocess,
+                    "Popen",
+                ) as decompressor,
+            ):
+                with self.assertRaisesRegex(
+                    archive.ArchiveError,
+                    "Package digest does not match protected intake",
+                ):
+                    archive.inspect_package(
+                        path,
+                        expected_sha256="0" * 64,
+                        requested_members=("usr/bin/broot",),
+                    )
+
+                decompressor.assert_not_called()
+
+
+class FamilyMemberSelectionTests(unittest.TestCase):
+
+    def setUp(self):
+        self.filename = "broot-1.0-1-x86_64.pkg.tar.zst"
+        self.member = "usr/bin/broot"
+
+        self.expected = {
+            self.filename: "broot",
+        }
+
+        self.inventory = {
+            "entries": {
+                self.member: {
+                    "type": "file",
+                    "mode": 0o755,
+                    "size": 5,
+                },
+            },
+            "selected_members": {
+                self.member: {
+                    "size": 5,
+                    "sha256": "a" * 64,
+                },
+            },
+        }
+
+    def test_default_family_member_requests(self):
+        for requests in (None, {}):
+            self.assertEqual(
+                archive.validate_family_member_requests(
+                    requests, self.expected
+                ),
+                {},
+            )
+
+    def test_exact_family_member_requests(self):
+        requests = {
+            self.filename: (
+                "usr/share/license",
+                self.member,
+            ),
+        }
+
+        self.assertEqual(
+            archive.validate_family_member_requests(
+                requests, self.expected
+            ),
+            {
+                self.filename: (
+                    self.member,
+                    "usr/share/license",
+                ),
+            },
+        )
+
+    def test_unknown_package_request(self):
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "unexpected package",
+        ):
+            archive.validate_family_member_requests(
+                {"unexpected.pkg.tar.zst": (self.member,)},
+                self.expected,
+            )
+
+    def test_invalid_family_request_collection(self):
+        for requests in ("invalid", [], 7):
+            with self.subTest(requests=requests):
+                with self.assertRaises(
+                    archive.ArchiveError
+                ):
+                    archive.validate_family_member_requests(
+                        requests, self.expected
+                    )
+
+    def test_empty_package_request(self):
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Empty package member request",
+        ):
+            archive.validate_family_member_requests(
+                {self.filename: ()},
+                self.expected,
+            )
+
+    def test_invalid_member_path_in_family_request(self):
+        with self.assertRaises(archive.ArchiveError):
+            archive.validate_family_member_requests(
+                {self.filename: ("../unsafe",)},
+                self.expected,
+            )
+
+    def test_selected_result_identity(self):
+        result = archive.validate_selected_member_results(
+            self.inventory,
+            (self.member,),
+        )
+
+        self.assertEqual(
+            result,
+            self.inventory["selected_members"],
+        )
+
+        self.assertIsNot(
+            result[self.member],
+            self.inventory["selected_members"][self.member],
+        )
+
+    def test_default_inventory_has_no_member_results(self):
+        self.inventory.pop("selected_members")
+
+        self.assertEqual(
+            archive.validate_selected_member_results(
+                self.inventory, ()
+            ),
+            {},
+        )
+
+    def test_unrequested_results_rejected(self):
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Unexpected selected member results",
+        ):
+            archive.validate_selected_member_results(
+                self.inventory, ()
+            )
+
+    def test_missing_selected_result_rejected(self):
+        self.inventory["selected_members"] = {}
+
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "result inventory mismatch",
+        ):
+            archive.validate_selected_member_results(
+                self.inventory, (self.member,)
+            )
+
+    def test_additional_selected_result_rejected(self):
+        self.inventory["selected_members"]["extra"] = {
+            "size": 5,
+            "sha256": "b" * 64,
+        }
+
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "result inventory mismatch",
+        ):
+            archive.validate_selected_member_results(
+                self.inventory, (self.member,)
+            )
+
+    def test_selected_result_size_mismatch(self):
+        self.inventory["selected_members"][self.member]["size"] = 6
+
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Invalid selected member identity",
+        ):
+            archive.validate_selected_member_results(
+                self.inventory, (self.member,)
+            )
+
+    def test_selected_result_invalid_digest(self):
+        self.inventory["selected_members"][self.member]["sha256"] = "invalid"
+
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Invalid selected member identity",
+        ):
+            archive.validate_selected_member_results(
+                self.inventory, (self.member,)
+            )
+
+    def test_selected_result_nonregular_member(self):
+        self.inventory["entries"][self.member]["type"] = "symlink"
+
+        with self.assertRaisesRegex(
+            archive.ArchiveError,
+            "Invalid selected member record",
+        ):
+            archive.validate_selected_member_results(
+                self.inventory, (self.member,)
+            )
+
+    def test_family_inspection_passes_expected_digest(self):
+        from unittest.mock import Mock, patch
+
+        registry = Mock()
+        expected_digest = "a" * 64
+
+        checksums = {
+            self.filename: expected_digest,
+        }
+
+        package = Path("/protected") / self.filename
+
+        with (
+            patch.object(
+                archive,
+                "require_unprivileged",
+            ),
+            patch.object(
+                archive,
+                "expected_batch_names",
+                return_value=self.expected,
+            ),
+            patch.object(
+                archive,
+                "inspect_package",
+                return_value=self.inventory,
+            ) as inspector,
+            patch.object(
+                archive,
+                "validate_family_inventories",
+                return_value={"verified": True},
+            ) as validator,
+        ):
+            result = archive.inspect_family(
+                "broot",
+                "1.0-1",
+                [package],
+                checksums,
+                registry=registry,
+            )
+
+            inspector.assert_called_once_with(
+                package,
+                expected_sha256=expected_digest,
+                requested_members=(),
+            )
+
+            validator.assert_called_once_with(
+                "broot",
+                "1.0-1",
+                {self.filename: self.inventory},
+                checksums,
+                registry=registry,
+                requested_members={},
+            )
+
+        self.assertEqual(result, {"verified": True})
+
+    def test_family_inspection_passes_member_requests(self):
+        from unittest.mock import Mock, patch
+
+        registry = Mock()
+
+        checksums = {
+            self.filename: "a" * 64,
+        }
+
+        requests = {
+            self.filename: (self.member,),
+        }
+
+        package = Path("/protected") / self.filename
+
+        with (
+            patch.object(
+                archive,
+                "require_unprivileged",
+            ),
+            patch.object(
+                archive,
+                "expected_batch_names",
+                return_value=self.expected,
+            ),
+            patch.object(
+                archive,
+                "inspect_package",
+                return_value=self.inventory,
+            ) as inspector,
+            patch.object(
+                archive,
+                "validate_family_inventories",
+            ) as validator,
+        ):
+            archive.inspect_family(
+                "broot",
+                "1.0-1",
+                [package],
+                checksums,
+                registry=registry,
+                requested_members=requests,
+            )
+
+            inspector.assert_called_once_with(
+                package,
+                expected_sha256=checksums[self.filename],
+                requested_members=(self.member,),
+            )
+
+            validator.assert_called_once_with(
+                "broot",
+                "1.0-1",
+                {self.filename: self.inventory},
+                checksums,
+                registry=registry,
+                requested_members=requests,
+            )
+
+    def test_unknown_package_rejected_before_inspection(self):
+        from unittest.mock import Mock, patch
+
+        with (
+            patch.object(
+                archive,
+                "require_unprivileged",
+            ),
+            patch.object(
+                archive,
+                "expected_batch_names",
+                return_value=self.expected,
+            ),
+            patch.object(
+                archive,
+                "inspect_package",
+            ) as inspector,
+        ):
+            with self.assertRaisesRegex(
+                archive.ArchiveError,
+                "unexpected package",
+            ):
+                archive.inspect_family(
+                    "broot",
+                    "1.0-1",
+                    [Path("/protected") / self.filename],
+                    {self.filename: "a" * 64},
+                    registry=Mock(),
+                    requested_members={
+                        "unexpected.pkg.tar.zst": (
+                            self.member,
+                        ),
+                    },
+                )
+
+            inspector.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

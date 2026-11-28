@@ -612,6 +612,282 @@ class WorkerCases:
         self.assert_child_cleanup(program)
 
 
+    def test_selected_member_native_byte_parity(self):
+        names = ("usr/bin/broot",)
+
+        result = self.archive.inspect_package(
+            self.package,
+            expected_sha256=self.digest,
+            requested_members=names,
+        )
+
+        native_bytes = subprocess.check_output(
+            [
+                "/usr/bin/bsdtar",
+                "-xOf",
+                str(self.package),
+                "--",
+                names[0],
+            ],
+            cwd="/",
+            env=ENVIRONMENT,
+            timeout=15,
+        )
+
+        self.assertEqual(
+            set(result["selected_members"]),
+            set(names),
+        )
+
+        self.assertEqual(
+            result["selected_members"][names[0]],
+            {
+                "size": len(native_bytes),
+                "sha256": hashlib.sha256(
+                    native_bytes
+                ).hexdigest(),
+            },
+        )
+
+        self.assertEqual(
+            result["sha256"], self.digest
+        )
+
+        self.assertEqual(
+            self.package.read_bytes(),
+            self.compressed,
+        )
+
+        print("PASS: Selected member bytes match native bsdtar.")
+
+    def test_selected_members_survive_family_validation(self):
+        name = "usr/bin/broot"
+
+        registry = self.archive.load_release_registry()
+
+        checksums = {
+            FILENAME: self.digest,
+        }
+
+        ordinary = self.archive.inspect_family(
+            "broot",
+            "1.0-1",
+            [self.package],
+            checksums,
+            registry=registry,
+        )
+
+        selected = self.archive.inspect_family(
+            "broot",
+            "1.0-1",
+            [self.package],
+            checksums,
+            registry=registry,
+            requested_members={
+                FILENAME: (name,),
+            },
+        )
+
+        self.assertTrue(
+            selected["structural_and_identity_validation"]
+        )
+
+        package = selected["packages"]["broot"]
+
+        self.assertEqual(
+            package["identity"]["sha256"],
+            self.digest,
+        )
+
+        native_bytes = subprocess.check_output(
+            [
+                "/usr/bin/bsdtar",
+                "-xOf",
+                str(self.package),
+                "--",
+                name,
+            ],
+            cwd="/",
+            env=ENVIRONMENT,
+            timeout=15,
+        )
+
+        self.assertEqual(
+            package.pop("selected_members"),
+            {
+                name: {
+                    "size": len(native_bytes),
+                    "sha256": hashlib.sha256(
+                        native_bytes
+                    ).hexdigest(),
+                },
+            },
+        )
+
+        self.assertEqual(selected, ordinary)
+
+        print("PASS: Selected member identity bound to validated family.")
+
+    def test_selected_missing_and_nonregular_members(self):
+        registry = self.archive.load_release_registry()
+
+        cases = (
+            (
+                "usr/bin/missing",
+                "Missing selected archive members",
+            ),
+            (
+                "usr/bin",
+                "Selected member is not regular",
+            ),
+            (
+                "usr/bin/alias",
+                "Selected member is not regular",
+            ),
+        )
+
+        for name, message in cases:
+            with self.subTest(member=name):
+                with self.assertRaisesRegex(
+                    self.archive.ArchiveError,
+                    message,
+                ):
+                    self.archive.inspect_family(
+                        "broot",
+                        "1.0-1",
+                        [self.package],
+                        {FILENAME: self.digest},
+                        registry=registry,
+                        requested_members={
+                            FILENAME: (name,),
+                        },
+                    )
+
+    def test_family_digest_rejected_before_decompression(self):
+        registry = self.archive.load_release_registry()
+
+        incorrect = (
+            "0" if self.digest[0] != "0" else "1"
+        ) + self.digest[1:]
+
+        for requests in (
+            None,
+            {FILENAME: ("usr/bin/broot",)},
+        ):
+            with self.subTest(requests=requests):
+                with patch.object(
+                    self.archive.subprocess,
+                    "Popen",
+                ) as decompressor:
+                    with self.assertRaisesRegex(
+                        self.archive.ArchiveError,
+                        "Package digest does not match protected intake",
+                    ):
+                        self.archive.inspect_family(
+                            "broot",
+                            "1.0-1",
+                            [self.package],
+                            {FILENAME: incorrect},
+                            registry=registry,
+                            requested_members=requests,
+                        )
+
+                    decompressor.assert_not_called()
+
+    def test_mutation_after_selected_member_hashing(self):
+        original_inspect = self.archive.inspect_tar_stream
+
+        def inspect_and_mutate(stream, **options):
+            result = original_inspect(
+                stream, **options
+            )
+
+            self.assertIn(
+                "usr/bin/broot",
+                result["selected_members"],
+            )
+
+            modified = bytearray(self.compressed)
+            modified[-1] ^= 1
+
+            self.package.write_bytes(modified)
+
+            return result
+
+        with patch.object(
+            self.archive,
+            "inspect_tar_stream",
+            side_effect=inspect_and_mutate,
+        ):
+            with self.assertRaisesRegex(
+                self.archive.ArchiveError,
+                "Package changed during inspection",
+            ):
+                self.archive.inspect_package(
+                    self.package,
+                    expected_sha256=self.digest,
+                    requested_members=("usr/bin/broot",),
+                )
+
+    def test_failed_decompressor_after_valid_selected_member(self):
+        real_popen = subprocess.Popen
+        children = []
+
+        program = (
+            "import sys\n"
+            f"sys.stdout.buffer.write(bytes.fromhex('{self.tar.hex()}'))\n"
+            "sys.stdout.buffer.flush()\n"
+            "sys.exit(7)\n"
+        )
+
+        def spawn_replacement(arguments, **options):
+            process = real_popen(
+                [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    "-c",
+                    program,
+                ],
+                **options,
+            )
+
+            children.append(process)
+            return process
+
+        with patch.object(
+            self.archive.subprocess,
+            "Popen",
+            side_effect=spawn_replacement,
+        ):
+            with self.assertRaisesRegex(
+                self.archive.ArchiveError,
+                "Package decompression failed",
+            ):
+                self.archive.inspect_package(
+                    self.package,
+                    expected_sha256=self.digest,
+                    requested_members=("usr/bin/broot",),
+                )
+
+        self.assertEqual(len(children), 1)
+
+        process = children[0]
+
+        self.assertEqual(process.returncode, 7)
+        self.assertTrue(process.stdout.closed)
+
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(process.pid, os.WNOHANG)
+
+        self.assertEqual(
+            self.package.read_bytes(),
+            self.compressed,
+        )
+
+        print("PASS: Failed decompressor cannot produce member results.")
+
+
 @unittest.skipUnless(
     NATIVE_ENABLED,
     "Native package-pipeline tests not enabled",
@@ -791,6 +1067,37 @@ class NativeArchiveTests(unittest.TestCase):
     def test_actual_decompressor_exit_cleanup(self):
         self.run_worker(
             "test_decompressor_exit_timeout_killed_and_reaped"
+        )
+
+
+    def test_actual_selected_member_native_byte_parity(self):
+        self.run_worker(
+            "test_selected_member_native_byte_parity"
+        )
+
+    def test_actual_selected_members_survive_family_validation(self):
+        self.run_worker(
+            "test_selected_members_survive_family_validation"
+        )
+
+    def test_actual_selected_missing_and_nonregular_members(self):
+        self.run_worker(
+            "test_selected_missing_and_nonregular_members"
+        )
+
+    def test_actual_family_digest_rejected_before_decompression(self):
+        self.run_worker(
+            "test_family_digest_rejected_before_decompression"
+        )
+
+    def test_actual_mutation_after_selected_member_hashing(self):
+        self.run_worker(
+            "test_mutation_after_selected_member_hashing"
+        )
+
+    def test_actual_failed_decompressor_after_valid_selected_member(self):
+        self.run_worker(
+            "test_failed_decompressor_after_valid_selected_member"
         )
 
 

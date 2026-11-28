@@ -27,6 +27,7 @@ MAX_EXPANDED_BYTES = 2 * 1024**3
 MAX_MEMBER_BYTES = 512 * 1024**2
 MAX_METADATA_BYTES = 1024**2
 MAX_MEMBERS = 25_000
+MAX_SELECTED_MEMBERS = 64
 MAX_PATH_BYTES = 4096
 INSPECTION_TIMEOUT = 300
 PROCESS_CLEANUP_TIMEOUT = 30
@@ -895,8 +896,78 @@ def decode_physical_header(header):
     return member, kind
 
 
-def inspect_tar_stream(stream):
-    """Inspect a strictly bounded conventional USTAR archive."""
+def validate_member_requests(requested_members):
+    """Validate trusted caller-selected canonical member paths."""
+
+    if not isinstance(requested_members, (tuple, list)):
+        raise ArchiveError(
+            "Member requests must be a tuple or list"
+        )
+
+    if len(requested_members) > MAX_SELECTED_MEMBERS:
+        raise ArchiveError(
+            "Selected member count exceeds policy"
+        )
+
+    selected = set()
+
+    for name in requested_members:
+        if not isinstance(name, str):
+            raise ArchiveError(
+                "Selected member path must be text"
+            )
+
+        normalized = normalize_member_path(
+            name, directory=False
+        )
+
+        if normalized != name or name == ".":
+            raise ArchiveError(
+                f"Noncanonical selected member: {name!r}"
+            )
+
+        if name in REQUIRED_METADATA | OPTIONAL_METADATA:
+            raise ArchiveError(
+                f"Metadata is not selectable: {name!r}"
+            )
+
+        if name in selected:
+            raise ArchiveError(
+                f"Duplicate selected member: {name!r}"
+            )
+
+        selected.add(name)
+
+    return frozenset(selected)
+
+
+def hash_member_payload(reader, size):
+    """Hash a bounded regular payload without retaining its bytes."""
+
+    if (
+        type(size) is not int
+        or not 0 <= size <= MAX_MEMBER_BYTES
+    ):
+        raise ArchiveError(
+            "Selected member size outside policy"
+        )
+
+    result = hashlib.sha256()
+    remaining = size
+
+    while remaining:
+        length = min(remaining, TAR_READ_CHUNK)
+        result.update(read_exact(reader, length))
+        remaining -= length
+
+    return result.hexdigest()
+
+
+def inspect_tar_stream(stream, *, requested_members=()):
+    """Inspect a USTAR archive, optionally hashing selected members."""
+    selected = validate_member_requests(requested_members)
+    selected_hashes = {}
+
     entries = {}
     metadata = {}
     member_count = 0
@@ -983,6 +1054,18 @@ def inspect_tar_stream(stream):
                 "utf-8",
                 errors="strict",
             )
+        elif name in selected:
+            if kind != "file":
+                raise ArchiveError(
+                    f"Selected member is not regular: {name!r}"
+                )
+
+            selected_hashes[name] = {
+                "size": member.size,
+                "sha256": hash_member_payload(
+                    reader, member.size
+                ),
+            }
         else:
             consume_payload(reader, member.size)
 
@@ -1001,7 +1084,15 @@ def inspect_tar_stream(stream):
 
     validate_member_relationships(entries)
 
-    return {
+    missing_selected = selected - selected_hashes.keys()
+
+    if missing_selected:
+        raise ArchiveError(
+            "Missing selected archive members: "
+            + ", ".join(sorted(missing_selected))
+        )
+
+    result = {
         "schema": 1,
         "structural_inventory_only": True,
         "member_count": member_count,
@@ -1013,6 +1104,13 @@ def inspect_tar_stream(stream):
             for entry in entries.values()
         ),
     }
+
+    if selected:
+        result["selected_members"] = dict(
+            sorted(selected_hashes.items())
+        )
+
+    return result
 
 
 PACKAGE_IDENTITY_NAME = re.compile(
@@ -1248,9 +1346,30 @@ def archive_file_identity(info):
     )
 
 
-def inspect_package(path):
-    """Decompress and inspect a package without executing it."""
+def inspect_package(
+    path,
+    *,
+    expected_sha256=None,
+    requested_members=(),
+):
+    """Inspect a package and optionally hash selected regular members."""
+
     require_unprivileged()
+
+    selected = validate_member_requests(requested_members)
+
+    if expected_sha256 is not None and (
+        not isinstance(expected_sha256, str)
+        or PACKAGE_DIGEST.fullmatch(expected_sha256) is None
+    ):
+        raise ArchiveError(
+            "Invalid expected package digest"
+        )
+
+    if selected and expected_sha256 is None:
+        raise ArchiveError(
+            "Selected member access requires an expected archive digest"
+        )
 
     deadline = time.monotonic() + INSPECTION_TIMEOUT
 
@@ -1294,6 +1413,14 @@ def inspect_package(path):
                 "Package changed during initial hashing"
             )
 
+        if (
+            expected_sha256 is not None
+            and original_digest != expected_sha256
+        ):
+            raise ArchiveError(
+                "Package digest does not match protected intake"
+            )
+
         remaining_time(deadline)
 
         process = subprocess.Popen(
@@ -1318,7 +1445,13 @@ def inspect_package(path):
                 process.stdout,
                 deadline,
             ) as reader:
-                result = inspect_tar_stream(reader)
+                if selected:
+                    result = inspect_tar_stream(
+                        reader,
+                        requested_members=tuple(sorted(selected)),
+                    )
+                else:
+                    result = inspect_tar_stream(reader)
 
             try:
                 status = process.wait(
@@ -1442,6 +1575,98 @@ def expected_batch_names(contract, version, checksums):
     return names
 
 
+def validate_family_member_requests(requests, expected_names):
+    """Bind requested members to exact expected package filenames."""
+
+    if requests is None:
+        return {}
+
+    if not isinstance(requests, dict):
+        raise ArchiveError(
+            "Family member requests must be a dictionary"
+        )
+
+    if not requests.keys() <= expected_names.keys():
+        raise ArchiveError(
+            "Member request references unexpected package"
+        )
+
+    selected = {}
+
+    for filename, members in requests.items():
+        normalized = validate_member_requests(members)
+
+        if not normalized:
+            raise ArchiveError(
+                "Empty package member request"
+            )
+
+        selected[filename] = tuple(sorted(normalized))
+
+    return selected
+
+
+def validate_selected_member_results(inventory, requested_members):
+    """Verify the selected-member result agrees with its inventory."""
+
+    selected = validate_member_requests(requested_members)
+
+    if not selected:
+        if "selected_members" in inventory:
+            raise ArchiveError(
+                "Unexpected selected member results"
+            )
+
+        return {}
+
+    results = inventory.get("selected_members")
+
+    if (
+        not isinstance(results, dict)
+        or results.keys() != selected
+    ):
+        raise ArchiveError(
+            "Selected member result inventory mismatch"
+        )
+
+    verified = {}
+
+    for name in sorted(selected):
+        record = results[name]
+        entry = inventory["entries"].get(name)
+
+        if (
+            not isinstance(record, dict)
+            or set(record) != {"size", "sha256"}
+            or not isinstance(entry, dict)
+            or entry.get("type") != "file"
+        ):
+            raise ArchiveError(
+                f"Invalid selected member record: {name!r}"
+            )
+
+        size = record["size"]
+        digest = record["sha256"]
+
+        if (
+            type(size) is not int
+            or not 0 <= size <= MAX_MEMBER_BYTES
+            or size != entry.get("size")
+            or not isinstance(digest, str)
+            or PACKAGE_DIGEST.fullmatch(digest) is None
+        ):
+            raise ArchiveError(
+                f"Invalid selected member identity: {name!r}"
+            )
+
+        verified[name] = {
+            "size": size,
+            "sha256": digest,
+        }
+
+    return verified
+
+
 def validate_family_inventories(
     family,
     version,
@@ -1449,6 +1674,7 @@ def validate_family_inventories(
     expected_checksums,
     *,
     registry,
+    requested_members=None,
 ):
     """Validate inspected candidates against trusted family inputs.
 
@@ -1487,8 +1713,13 @@ def validate_family_inventories(
             "Candidate inventory differs from expected batch"
         )
 
+    requests = validate_family_member_requests(
+        requested_members, expected_names
+    )
+
     verified = {}
     identities = {}
+    member_results = {}
 
     # Establish all identities before applying link exceptions.
     for filename, name in sorted(expected_names.items()):
@@ -1511,6 +1742,11 @@ def validate_family_inventories(
             raise ArchiveError(
                 f"Duplicate package identity: {name!r}"
             )
+
+        member_results[name] = validate_selected_member_results(
+            inventory,
+            requests.get(filename, ()),
+        )
 
         verified[name] = inventory
         identities[name] = identity
@@ -1579,6 +1815,11 @@ def validate_family_inventories(
             "symbolic_links": resolved,
         }
 
+        if member_results[name]:
+            results[name]["selected_members"] = (
+                member_results[name]
+            )
+
     return {
         "schema": 1,
         "family": family,
@@ -1596,6 +1837,7 @@ def inspect_family(
     expected_checksums,
     *,
     registry,
+    requested_members=None,
 ):
     """Inspect actual package files before validating their family."""
     require_unprivileged()
@@ -1636,10 +1878,18 @@ def inspect_family(
             "Candidate file inventory differs from expected batch"
         )
 
+    requests = validate_family_member_requests(
+        requested_members, expected_names
+    )
+
     inventories = {}
 
     for filename, path in sorted(selected.items()):
-        inventories[filename] = inspect_package(path)
+        inventories[filename] = inspect_package(
+            path,
+            expected_sha256=expected_checksums[filename],
+            requested_members=requests.get(filename, ()),
+        )
 
     return validate_family_inventories(
         family,
@@ -1647,6 +1897,7 @@ def inspect_family(
         inventories,
         expected_checksums,
         registry=registry,
+        requested_members=requests,
     )
 
 
