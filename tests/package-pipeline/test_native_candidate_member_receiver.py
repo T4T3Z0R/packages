@@ -906,6 +906,8 @@ class NativeCombinedFamilyTests(unittest.TestCase):
                     )
 
             add(".PKGINFO", pkginfo)
+            add(".BUILDINFO", b"format = 2\n")
+            add(".MTREE", b"fixture")
 
             parents = {
                 parent.as_posix()
@@ -931,6 +933,32 @@ class NativeCombinedFamilyTests(unittest.TestCase):
                     payload,
                     mode=0o755,
                 )
+
+        # Establish structural fixture validity before
+        # invoking any restricted family inspection.
+        inventory = self.archive.inspect_tar_stream(
+            io.BytesIO(buffer.getvalue())
+        )
+
+        self.assertTrue(
+            inventory["structural_inventory_only"]
+        )
+
+        self.assertTrue(
+            self.archive.REQUIRED_METADATA
+            <= inventory["entries"].keys()
+        )
+
+        for member, payload in members.items():
+            self.assertEqual(
+                inventory["entries"][member]["type"],
+                "file",
+            )
+
+            self.assertEqual(
+                inventory["entries"][member]["size"],
+                len(payload),
+            )
 
         compressed = self.native_run(
             ["/usr/bin/zstd", "-q", "-c"],
@@ -1096,6 +1124,8 @@ class NativeCombinedFamilyTests(unittest.TestCase):
         real_read = os.read
         real_collect = self.receiver.receive_linkage_receipt
 
+        self.inspector_diagnostics = []
+
         def collect_with_diagnostics(process, *, deadline):
             diagnostic_fd = process.stderr.fileno()
             diagnostics = bytearray()
@@ -1126,6 +1156,10 @@ class NativeCombinedFamilyTests(unittest.TestCase):
                     )
 
             except self.receiver.ReceiverError:
+                self.inspector_diagnostics.append(
+                    bytes(diagnostics)
+                )
+
                 print(
                     "Native restricted inspector stderr: "
                     + repr(bytes(diagnostics)),
@@ -1283,13 +1317,51 @@ class NativeCombinedFamilyTests(unittest.TestCase):
 
         self.assert_rejected()
 
+        self.assertEqual(
+            len(self.inspector_diagnostics), 1
+        )
+
+        self.assertIn(
+            b"Missing selected archive members:",
+            self.inspector_diagnostics[0],
+        )
+
+        self.assertIn(
+            b"usr/bin/noctalia",
+            self.inspector_diagnostics[0],
+        )
+
     def test_native_malformed_required_elf(self):
+        from unittest.mock import patch
+
         self.prepare_family(
             "noctalia-custom",
             malformed="usr/bin/noctalia",
         )
 
-        self.assert_rejected()
+        with patch.object(
+            self.receiver,
+            "inspect_materialized_member",
+            wraps=self.receiver.inspect_materialized_member,
+        ) as inspector:
+            self.assert_rejected()
+
+        # The family must reach actual ELF inspection.
+        # An earlier archive rejection is not sufficient.
+        inspector.assert_called_once()
+
+        self.assertEqual(
+            inspector.call_args.kwargs["expected_sha256"],
+            digest(b"not an ELF executable"),
+        )
+
+        self.assertEqual(
+            len(self.inspector_diagnostics), 1
+        )
+
+        self.assertTrue(
+            self.inspector_diagnostics[0]
+        )
 
     def test_native_later_linkage_failure(self):
         from unittest.mock import patch
